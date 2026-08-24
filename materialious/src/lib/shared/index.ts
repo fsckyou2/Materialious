@@ -1,5 +1,17 @@
 import { env } from '$env/dynamic/public';
 
+/**
+ * Marks a proxied request body as base64 encoded.
+ *
+ * The name must stay hyphenated. Reverse proxies routinely drop headers whose
+ * names contain underscores — nginx does so by default via
+ * `underscores_in_headers off` — which leaves the server treating the base64
+ * text as if it were the original binary body. For SABR media requests YouTube
+ * then rejects the payload with `sabr.malformed_config` and playback stalls
+ * forever without surfacing an error.
+ */
+export const BASE64_BODY_HEADER = 'x-materialious-base64-body';
+
 export type IsOwnBackend = {
 	builtWithBackend: boolean;
 	internalAuth: boolean;

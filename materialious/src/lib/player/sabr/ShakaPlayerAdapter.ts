@@ -526,14 +526,24 @@ export class ShakaPlayerAdapter implements SabrPlayerAdapter {
 		if (!networkingEngine) return;
 
 		this.responseFilter = async (type, response, context) => {
+			// response.uri is the URL the browser ended up fetching, which is not
+			// always the one that was requested: anything that proxies or rewrites
+			// requests hands back a URL isGoogleVideoURL cannot recognise, the
+			// interceptor is skipped, and SABR redirects and context updates go
+			// unhandled until the player is given an empty segment it can't parse.
+			// Match on the request instead, which is also what googlevideo looks
+			// the request metadata up by.
+			const requestUri = response.originalRequest?.uris?.[0];
+
 			if (
 				type !== shaka.net.NetworkingEngine.RequestType.SEGMENT ||
-				!isGoogleVideoURL(response.uri)
+				!requestUri ||
+				!isGoogleVideoURL(requestUri)
 			)
 				return;
 
 			const modifiedResponse = await interceptor({
-				url: response.originalRequest.uris[0],
+				url: requestUri,
 				method: response.originalRequest.method,
 				headers: response.headers,
 				data: response.data,
