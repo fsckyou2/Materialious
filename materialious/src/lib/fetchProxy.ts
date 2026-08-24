@@ -73,10 +73,14 @@ export const fetchProxied = async (
 			await sodium.ready;
 			requestOptions.body = sodium.to_base64(requestOptions.body);
 
-			requestOptions.headers = {
-				...requestOptions.headers,
-				__is_base64_encoded: 'true'
-			};
+			// Spreading a Headers instance yields an empty object, which silently
+			// dropped every header the caller set.
+			const headers = new Headers(requestOptions.headers);
+			// The body is a base64 string now, so any content type describing the
+			// original binary payload no longer applies.
+			headers.delete('content-type');
+			headers.set('__is_base64_encoded', 'true');
+			requestOptions.headers = headers;
 		}
 	}
 
