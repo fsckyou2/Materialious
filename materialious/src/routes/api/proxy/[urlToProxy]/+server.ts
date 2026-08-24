@@ -1,4 +1,4 @@
-import { isOwnBackend } from '$lib/shared';
+import { BASE64_BODY_HEADER, isOwnBackend } from '$lib/shared';
 import { env } from '$env/dynamic/public';
 import { env as privateEnv } from '$env/dynamic/private';
 import { Agent } from 'undici';
@@ -28,7 +28,8 @@ const ALLOWED_HEADERS = [
 	'X-Goog-FieldMask',
 	'Range',
 	'Referer',
-	'Cookie'
+	'Cookie',
+	BASE64_BODY_HEADER
 ].join(', ');
 
 const allowedBaseDomains: string[] = [
@@ -144,14 +145,21 @@ async function proxyRequest(
 		...(request.body ? { duplex: 'half' } : {})
 	};
 
+	const hasBody = request.method !== 'GET' && request.method !== 'HEAD';
+	const isBase64Body = hasBody && request.headers.has(BASE64_BODY_HEADER);
+
+	requestHeaders.delete(BASE64_BODY_HEADER);
+
 	let body: any = request.body;
 	if (body) {
-		if (request.headers.has('__is_base64_encoded')) {
-			requestHeaders.delete('__is_base64_encoded');
-
+		if (isBase64Body) {
 			await sodium.ready;
-			body = Uint8Array.from(sodium.from_base64(await request.text()));
-		} else if (request.method !== 'GET' && request.method !== 'HEAD') {
+			try {
+				body = sodium.from_base64(await request.text());
+			} catch {
+				throw error(400, 'Malformed base64 request body');
+			}
+		} else if (hasBody) {
 			body = await request.blob();
 		}
 	}

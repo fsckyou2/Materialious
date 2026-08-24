@@ -1,7 +1,7 @@
 import { isUnrestrictedPlatform, timeout } from '$lib/misc';
 import { Capacitor } from '@capacitor/core';
 import sodium from 'libsodium-wrappers-sumo';
-import { isOwnBackend } from './shared';
+import { BASE64_BODY_HEADER, isOwnBackend } from './shared';
 
 export const originalFetch = window.fetch;
 export const corsProxyUrl =
@@ -79,7 +79,7 @@ export const fetchProxied = async (
 			// The body is a base64 string now, so any content type describing the
 			// original binary payload no longer applies.
 			headers.delete('content-type');
-			headers.set('__is_base64_encoded', 'true');
+			headers.set(BASE64_BODY_HEADER, 'true');
 			requestOptions.headers = headers;
 		}
 	}
