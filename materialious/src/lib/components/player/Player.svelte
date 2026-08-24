@@ -47,6 +47,7 @@
 		toggleSubtitles
 	} from '$lib/player/index';
 	import { manifestDomainInclusion } from '$lib/player/manifest';
+	import { installDecodingInfoCache } from '$lib/player/mediaCapabilities';
 	import { injectSabr } from '$lib/player/sabr';
 	import type { SabrStreamingAdapter } from 'googlevideo/sabr-streaming-adapter';
 	import { fade } from 'svelte/transition';
@@ -437,6 +438,7 @@
 
 	onMount(async () => {
 		shaka.polyfill.installAll();
+		installDecodingInfoCache();
 		if (!shaka.Player.isBrowserSupported()) {
 			addToast({
 				data: {
