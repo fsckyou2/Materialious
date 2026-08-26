@@ -266,13 +266,20 @@ export async function continueVideoPlayerYTjs(videoId: string): Promise<{
 		});
 	});
 
+	// Live content does not always come with a manifest. A stream can report itself
+	// as live or as post live DVR while carrying nothing but ordinary adaptive
+	// formats, and interpolating the absent URL yields "undefined/mpd_version/7",
+	// which the proxy then rejects as unwhitelisted. Only take the manifest paths
+	// when there is a manifest to take; anything else is served like a normal video.
+	const liveManifestUrl =
+		video.streaming_data?.dash_manifest_url || video.streaming_data?.hls_manifest_url;
+
 	const isPostLiveDVR =
-		!!video.basic_info.is_post_live_dvr ||
-		(video.basic_info.is_live_content &&
-			!!(video.streaming_data?.dash_manifest_url || video.streaming_data?.hls_manifest_url));
+		!!liveManifestUrl &&
+		(!!video.basic_info.is_post_live_dvr || !!video.basic_info.is_live_content);
 
 	if (video.streaming_data) {
-		if (video.basic_info.is_live) {
+		if (video.basic_info.is_live && liveManifestUrl) {
 			dashUri = video.streaming_data.dash_manifest_url
 				? `${video.streaming_data.dash_manifest_url}/mpd_version/7`
 				: video.streaming_data.hls_manifest_url;
