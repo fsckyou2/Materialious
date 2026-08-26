@@ -73,14 +73,18 @@ export async function injectSabr(
 		);
 	});
 
-	const isLive = video.ytjs.video.basic_info.is_live;
+	// Matches the manifest selection in $lib/api/youtubejs/video.ts: live content
+	// without a manifest of its own is played from the adaptive formats like any
+	// other video, so it needs the SABR configuration below rather than skipping it.
+	const liveManifestUrl =
+		video.ytjs.video.streaming_data?.dash_manifest_url ||
+		video.ytjs.video.streaming_data?.hls_manifest_url;
+
+	const isLive = video.ytjs.video.basic_info.is_live && !!liveManifestUrl;
 	const isPostLiveDVR =
-		!!video.ytjs.video.basic_info.is_post_live_dvr ||
-		(video.ytjs.video.basic_info.is_live_content &&
-			!!(
-				video.ytjs.video.streaming_data?.dash_manifest_url ||
-				video.ytjs.video.streaming_data?.hls_manifest_url
-			));
+		!!liveManifestUrl &&
+		(!!video.ytjs.video.basic_info.is_post_live_dvr ||
+			!!video.ytjs.video.basic_info.is_live_content);
 
 	if (video.ytjs.video.streaming_data && !isPostLiveDVR && !isLive) {
 		sabrAdapter.setStreamingURL(
