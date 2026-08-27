@@ -44,7 +44,10 @@ async function fetchPlaylistWithContinuation(
 		playlistThumbnail: playlist.info.thumbnails[0].url ?? ''
 	};
 
-	if (playlist) {
+	// Attaching this unconditionally made the page ask for a continuation that was
+	// never there, and youtubei.js throws rather than returning nothing, which took
+	// the whole playlist down with it.
+	if (playlist.has_continuation) {
 		playlistPage.getContinuation = async () => {
 			const continuation = await playlist.getContinuation();
 			return fetchPlaylistWithContinuation(continuation, playlistId);
