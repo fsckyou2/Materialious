@@ -2,10 +2,13 @@ import { YT, YTNodes } from 'youtubei.js';
 import { getInnertube } from '.';
 import type {
 	ChannelContent,
+	ChannelContentPlaylists,
+	ChannelContentTypes,
 	ChannelContentVideos,
 	ChannelOptions,
 	ChannelPage,
 	Image,
+	PlaylistPage,
 	Video
 } from '../model';
 import { invidiousItemSchema } from './schema';
@@ -49,6 +52,32 @@ export async function getChannelYTjs(channelId: string): Promise<ChannelPage> {
 	};
 }
 
+/**
+ * Most channel tabs are a rich grid of rich items. Playlists are not: they come
+ * back as a plain grid nested in a section list, and their cards sit directly in
+ * that grid rather than being wrapped.
+ */
+function channelTabContents(innerResults: YT.Channel | YT.ChannelListContinuation) {
+	if (innerResults instanceof YT.Channel) {
+		const content = innerResults.current_tab?.content;
+
+		if (content?.is(YTNodes.RichGrid)) return content.contents;
+
+		if (content?.is(YTNodes.SectionList)) {
+			return content.contents.firstOfType(YTNodes.ItemSection)?.contents.firstOfType(YTNodes.Grid)
+				?.contents;
+		}
+
+		return undefined;
+	}
+
+	if (innerResults.contents?.is(YTNodes.AppendContinuationItemsAction)) {
+		return innerResults.contents.contents;
+	}
+
+	return undefined;
+}
+
 export function invidiousChannelContentSchema(
 	innerResults: YT.Channel | YT.ChannelListContinuation,
 	author: string,
@@ -56,36 +85,60 @@ export function invidiousChannelContentSchema(
 ) {
 	const videos: Video[] = [];
 
-	let contents;
-	if (
-		innerResults instanceof YT.Channel &&
-		innerResults.current_tab?.content?.is(YTNodes.RichGrid)
-	) {
-		contents = innerResults.current_tab.content.contents;
-	} else if (
-		innerResults instanceof YT.ChannelListContinuation &&
-		innerResults.contents?.is(YTNodes.AppendContinuationItemsAction)
-	) {
-		contents = innerResults.contents.contents;
-	}
-
+	const contents = channelTabContents(innerResults);
 	if (!contents) return videos;
 
 	contents.forEach((item) => {
-		if (item.is(YTNodes.RichItem)) {
-			const invidiousSchema = invidiousItemSchema(item.content);
+		const node = item.is(YTNodes.RichItem) ? item.content : item;
+		if (!node) return;
 
-			// Shorts parse into their own item type, so keeping only 'video' here
-			// discarded every one of them and left the shorts tab always empty.
-			if (invidiousSchema?.type === 'video' || invidiousSchema?.type === 'shortVideo') {
-				invidiousSchema.author = author;
-				invidiousSchema.authorId = authorId;
-				videos.push(invidiousSchema);
-			}
+		const invidiousSchema = invidiousItemSchema(node);
+
+		// Shorts parse into their own item type, so keeping only 'video' here
+		// discarded every one of them and left the shorts tab always empty.
+		if (invidiousSchema?.type === 'video' || invidiousSchema?.type === 'shortVideo') {
+			invidiousSchema.author = author;
+			invidiousSchema.authorId = authorId;
+			videos.push(invidiousSchema);
 		}
 	});
 
 	return videos;
+}
+
+function invidiousChannelPlaylistsSchema(
+	innerResults: YT.Channel | YT.ChannelListContinuation,
+	author: string,
+	authorId: string
+): PlaylistPage[] {
+	const playlists: PlaylistPage[] = [];
+
+	const contents = channelTabContents(innerResults);
+	if (!contents) return playlists;
+
+	contents.forEach((item) => {
+		const node = item.is(YTNodes.RichItem) ? item.content : item;
+		if (!node) return;
+
+		const invidiousSchema = invidiousItemSchema(node);
+		if (invidiousSchema?.type !== 'playlist') return;
+
+		// The card carries what a listing needs; the rest is filled in when the
+		// playlist itself is opened.
+		playlists.push({
+			...invidiousSchema,
+			author: invidiousSchema.author || author,
+			authorId: invidiousSchema.authorId || authorId,
+			description: '',
+			descriptionHtml: '',
+			viewCount: 0,
+			updated: 0,
+			isListed: true,
+			videos: []
+		});
+	});
+
+	return playlists;
 }
 
 function fetchChannelContentVideosWithContinuation(
@@ -102,19 +155,55 @@ function fetchChannelContentVideosWithContinuation(
 	};
 }
 
+function fetchChannelPlaylistsWithContinuation(
+	innerResults: YT.ChannelListContinuation,
+	author: string,
+	authorId: string
+): () => Promise<ChannelContentPlaylists> {
+	return async () => {
+		const continuation = await innerResults.getContinuation();
+		return {
+			playlists: invidiousChannelPlaylistsSchema(continuation, author, authorId),
+			getContinuation: fetchChannelPlaylistsWithContinuation(continuation, author, authorId)
+		};
+	};
+}
+
 async function fetchChannelContentWithContinuation(
 	innerResults: YT.Channel | YT.ChannelListContinuation,
 	author: string,
-	authorId: string
+	authorId: string,
+	type: ChannelContentTypes
 ): Promise<ChannelContent> {
+	const continuation = innerResults.has_continuation ? 'logicalPlaceholder' : undefined;
+
+	// The playlists tab has to be returned in its own shape, or the page has
+	// nothing to render: it reads playlists, never videos.
+	if (type === 'playlists') {
+		const playlistContent: ChannelContentPlaylists = {
+			continuation,
+			playlists: invidiousChannelPlaylistsSchema(innerResults, author, authorId)
+		};
+
+		if (continuation) {
+			playlistContent.getContinuation = fetchChannelPlaylistsWithContinuation(
+				innerResults as YT.ChannelListContinuation,
+				author,
+				authorId
+			);
+		}
+
+		return playlistContent;
+	}
+
 	const channelContent: ChannelContent = {
-		continuation: innerResults.has_continuation ? 'logicalPlaceholder' : undefined,
+		continuation,
 		videos: invidiousChannelContentSchema(innerResults, author, authorId)
 	};
 
 	if (channelContent.continuation) {
 		channelContent.getContinuation = fetchChannelContentVideosWithContinuation(
-			innerResults,
+			innerResults as YT.ChannelListContinuation,
 			author,
 			authorId
 		);
@@ -152,5 +241,10 @@ export async function getChannelContentYTjs(
 		}
 	}
 
-	return fetchChannelContentWithContinuation(innerResults, author, channelId);
+	return fetchChannelContentWithContinuation(
+		innerResults,
+		author,
+		channelId,
+		options.type ?? 'videos'
+	);
 }
