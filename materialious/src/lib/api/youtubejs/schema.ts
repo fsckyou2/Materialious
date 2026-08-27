@@ -3,6 +3,43 @@ import { convertToSeconds } from '$lib/time';
 import type { Channel, Playlist, Thumbnail, Video } from '../model';
 import { Helpers, YTNodes } from 'youtubei.js';
 
+/**
+ * The shorts tab returns lockups with no thumbnail of their own, so the only
+ * thing left to build one from is the video id. Both of these sizes exist for
+ * every video; the original aspect ratio variants do not.
+ */
+function thumbnailsForVideoId(videoId: string): Thumbnail[] {
+	if (!videoId) return [];
+
+	return [
+		{ url: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`, width: 480, height: 360 },
+		{ url: `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg`, width: 320, height: 180 }
+	];
+}
+
+/**
+ * Playlist lockups carry their length as a badge over the thumbnail, reading
+ * something like "6 videos".
+ */
+function playlistVideoCount(item: YTNodes.LockupView): number {
+	const thumbnail = item.content_image?.is(YTNodes.CollectionThumbnailView)
+		? item.content_image.primary_thumbnail
+		: undefined;
+
+	if (!thumbnail?.is(YTNodes.ThumbnailView)) return 0;
+
+	for (const overlay of thumbnail.overlays ?? []) {
+		if (!overlay.is(YTNodes.ThumbnailOverlayBadgeView)) continue;
+
+		for (const badge of overlay.badges) {
+			const count = extractNumber(badge.text ?? '');
+			if (count) return count;
+		}
+	}
+
+	return 0;
+}
+
 export function invidiousItemSchema(item: Helpers.YTNode): Video | Channel | Playlist | undefined {
 	if (item.is(YTNodes.Video)) {
 		const views = extractNumber(item.view_count?.toString() || '');
@@ -58,7 +95,7 @@ export function invidiousItemSchema(item: Helpers.YTNode): Video | Channel | Pla
 			authorVerified: false,
 			author,
 			authorId: '',
-			videoCount: 0,
+			videoCount: playlistVideoCount(item),
 			videos: []
 		};
 	} else if (item.is(YTNodes.ShortsLockupView)) {
@@ -76,7 +113,9 @@ export function invidiousItemSchema(item: Helpers.YTNode): Video | Channel | Pla
 			title: item.overlay_metadata?.primary_text?.toString() ?? '',
 			videoId,
 			viewCountText,
-			videoThumbnails: (item.thumbnail ?? []) as Thumbnail[],
+			videoThumbnails: item.thumbnail?.length
+				? (item.thumbnail as Thumbnail[])
+				: thumbnailsForVideoId(videoId),
 			published: 0,
 			publishedText: '',
 			description: '',

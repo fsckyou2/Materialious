@@ -2,6 +2,7 @@ import { extractNumber } from '$lib/numbers';
 import { YT, YTNodes } from 'youtubei.js';
 import { getInnertube } from '.';
 import type { PlaylistPage, PlaylistPageVideo } from '../model';
+import { invidiousItemSchema } from './schema';
 
 async function fetchPlaylistWithContinuation(
 	playlist: YT.Playlist,
@@ -9,7 +10,7 @@ async function fetchPlaylistWithContinuation(
 ): Promise<PlaylistPage> {
 	const videos: PlaylistPageVideo[] = [];
 
-	playlist.videos.forEach((video) => {
+	playlist.videos.forEach((video, position) => {
 		if (video.is(YTNodes.PlaylistVideo)) {
 			const videoIndex = video.index.text ?? '0';
 			videos.push({
@@ -24,7 +25,26 @@ async function fetchPlaylistWithContinuation(
 				lengthSeconds: video.duration.seconds,
 				videoThumbnails: video.thumbnails
 			});
+			return;
 		}
+
+		// Playlists now hand back their entries as lockups instead. Those carry no
+		// index of their own, so position in the list stands in for it.
+		const entry = invidiousItemSchema(video);
+		if (entry?.type !== 'video') return;
+
+		videos.push({
+			type: 'video',
+			author: entry.author || playlist.info.author.name,
+			authorId: entry.authorId,
+			index: position + 1,
+			indexId: (position + 1).toString(),
+			viewCount: entry.viewCount ?? 0,
+			title: entry.title,
+			videoId: entry.videoId,
+			lengthSeconds: entry.lengthSeconds,
+			videoThumbnails: entry.videoThumbnails
+		});
 	});
 
 	const playlistPage: PlaylistPage = {
@@ -44,7 +64,10 @@ async function fetchPlaylistWithContinuation(
 		playlistThumbnail: playlist.info.thumbnails[0].url ?? ''
 	};
 
-	if (playlist) {
+	// Attaching this unconditionally made the page ask for a continuation that was
+	// never there, and youtubei.js throws rather than returning nothing, which took
+	// the whole playlist down with it.
+	if (playlist.has_continuation) {
 		playlistPage.getContinuation = async () => {
 			const continuation = await playlist.getContinuation();
 			return fetchPlaylistWithContinuation(continuation, playlistId);

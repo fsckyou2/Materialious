@@ -37,7 +37,11 @@ export async function loadEntirePlaylist(
 				break;
 			}
 
-			processVideos(newPlaylist.videos, ignoreVideos, playlistVideos);
+			// A backend that cannot page returns the same videos for every page, so
+			// stop once one adds nothing rather than asking for it forever.
+			if (processVideos(newPlaylist.videos, ignoreVideos, playlistVideos) === 0) {
+				break;
+			}
 
 			page++;
 		}
@@ -65,4 +69,6 @@ function processVideos(
 
 	playlistVideos.push(...newVideos);
 	playlistVideos.sort((a: PlaylistPageVideo, b: PlaylistPageVideo) => a.index - b.index);
+
+	return newVideos.length;
 }
