@@ -74,7 +74,10 @@ export function invidiousChannelContentSchema(
 	contents.forEach((item) => {
 		if (item.is(YTNodes.RichItem)) {
 			const invidiousSchema = invidiousItemSchema(item.content);
-			if (invidiousSchema?.type === 'video') {
+
+			// Shorts parse into their own item type, so keeping only 'video' here
+			// discarded every one of them and left the shorts tab always empty.
+			if (invidiousSchema?.type === 'video' || invidiousSchema?.type === 'shortVideo') {
 				invidiousSchema.author = author;
 				invidiousSchema.authorId = authorId;
 				videos.push(invidiousSchema);
