@@ -70,15 +70,13 @@
 
 	async function loadMore(event: InfiniteEvent) {
 		let newSearch: SearchResults;
+		let completed: boolean;
 
 		const searchCacheItem = $searchCacheStore[data.searchStoreId];
 
 		if (searchCacheItem.getContinuation) {
 			newSearch = await searchCacheItem.getContinuation();
-
-			if (newSearch.getContinuation) {
-				searchCacheItem.getContinuation = newSearch.getContinuation;
-			}
+			completed = newSearch.getContinuation === undefined;
 		} else {
 			currentPage++;
 			searchOptions = {
@@ -87,15 +85,26 @@
 			};
 
 			newSearch = await getSearch(data.slug, searchOptions);
+			completed = false;
 		}
 
 		if (newSearch.length === 0) {
 			event.detail.complete();
-		} else {
-			searchCacheStore.set({
-				[data.searchStoreId]: [...(searchCacheItem ?? []), ...newSearch]
-			});
+			return;
 		}
+
+		// getContinuation hangs off the results array itself, so spreading into a
+		// new array carries the results over but leaves it behind. Without it every
+		// later page took the branch above, and the YouTube backend ignores the page
+		// number it passes, so the first page of results was appended over and over.
+		const combined: SearchResults = [...searchCacheItem, ...newSearch];
+		combined.getContinuation = newSearch.getContinuation;
+
+		searchCacheStore.set({
+			[data.searchStoreId]: combined
+		});
+
+		if (completed) event.detail.complete();
 	}
 </script>
 
