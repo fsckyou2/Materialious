@@ -17,6 +17,29 @@ function thumbnailsForVideoId(videoId: string): Thumbnail[] {
 	];
 }
 
+/**
+ * Playlist lockups carry their length as a badge over the thumbnail, reading
+ * something like "6 videos".
+ */
+function playlistVideoCount(item: YTNodes.LockupView): number {
+	const thumbnail = item.content_image?.is(YTNodes.CollectionThumbnailView)
+		? item.content_image.primary_thumbnail
+		: undefined;
+
+	if (!thumbnail?.is(YTNodes.ThumbnailView)) return 0;
+
+	for (const overlay of thumbnail.overlays ?? []) {
+		if (!overlay.is(YTNodes.ThumbnailOverlayBadgeView)) continue;
+
+		for (const badge of overlay.badges) {
+			const count = extractNumber(badge.text ?? '');
+			if (count) return count;
+		}
+	}
+
+	return 0;
+}
+
 export function invidiousItemSchema(item: Helpers.YTNode): Video | Channel | Playlist | undefined {
 	if (item.is(YTNodes.Video)) {
 		const views = extractNumber(item.view_count?.toString() || '');
@@ -72,7 +95,7 @@ export function invidiousItemSchema(item: Helpers.YTNode): Video | Channel | Pla
 			authorVerified: false,
 			author,
 			authorId: '',
-			videoCount: 0,
+			videoCount: playlistVideoCount(item),
 			videos: []
 		};
 	} else if (item.is(YTNodes.ShortsLockupView)) {
