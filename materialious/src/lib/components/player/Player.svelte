@@ -57,6 +57,9 @@
 	import Settings, { setActiveAudioTrack, setActiveVideoTrack } from './settings/Settings.svelte';
 	import CaptionSettings from './settings/CaptionSettings.svelte';
 	import Airplay from './settings/Airplay.svelte';
+	import Cast from './settings/Cast.svelte';
+	import CastOverlay from './CastOverlay.svelte';
+	import { castStatus, castVideo } from '$lib/player/cast/sender';
 	import Pip from './settings/Pip.svelte';
 	import FullscreenToggle from './settings/FullscreenToggle.svelte';
 	import Timeline from './Timeline.svelte';
@@ -767,6 +770,22 @@
 
 		// Update video player height again on video loaded.
 		updateVideoPlayerHeight();
+
+		// Arriving on a new video while a receiver is still connected - a playlist
+		// advancing, or the viewer picking something else - hands it to the
+		// television rather than starting playback in both places.
+		if ($castStatus.connected && $castStatus.videoId !== data.video.videoId) {
+			try {
+				playerElement?.pause();
+				await castVideo({
+					videoId: data.video.videoId,
+					startTime: await getPlaybackHistory(),
+					poster: getBestThumbnail(data.video.videoThumbnails, 1280, 720)
+				});
+			} catch (error) {
+				console.error('Failed to hand the next video to the receiver:', error);
+			}
+		}
 	});
 
 	async function getPlaybackHistory(): Promise<number> {
@@ -854,6 +873,10 @@
 	}}
 	bind:this={playerContainer}
 >
+	{#if $castStatus.connected && $castStatus.videoId === data.video.videoId}
+		<CastOverlay video={data.video} playlistId={data.playlistId} />
+	{/if}
+
 	<ClosedCaptions video={data.video} bind:currentTime bind:showControls />
 
 	<video
@@ -944,6 +967,7 @@
 					<CaptionSettings video={data.video} />
 					{#if playerElement}
 						<Settings {player} {playerElement} />
+						<Cast video={data.video} {playerElement} />
 						<Airplay {playerElement} />
 						<Pip {playerElement} />
 					{/if}
