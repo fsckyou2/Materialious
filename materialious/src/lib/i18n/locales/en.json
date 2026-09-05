@@ -210,6 +210,12 @@
 			"failed": "Could not start casting",
 			"quality": "Quality",
 			"qualityAuto": "Auto"
+		},
+		"playOn": {
+			"title": "Play on a television",
+			"noDevices": "No televisions paired",
+			"failed": "Could not play on that television",
+			"started": "Playing on {{name}}"
 		}
 	},
 	"layout": {
@@ -379,6 +385,20 @@
 			"title": "DeArrow",
 			"thumbnailInstanceUrl": "Thumbnail instance URL",
 			"titleOnly": "Title only"
+		},
+		"devices": {
+			"title": "Televisions",
+			"description": "Pair a television running the app, then play videos on it from any browser.",
+			"code": "Pairing code",
+			"pair": "Pair",
+			"paired": "Paired {{name}}",
+			"pairFailed": "That code is not valid, or it has expired",
+			"unpair": "Unpair",
+			"unpairFailed": "Could not unpair that television",
+			"none": "No televisions paired yet.",
+			"online": "Ready",
+			"offline": "Not connected",
+			"playing": "Playing"
 		}
 	},
 	"subscribe": "Subscribe",

@@ -13,6 +13,7 @@
 	import { isOwnBackend, isAdminUsername } from '$lib/shared';
 	import InternalAccount from './InternalAccount.svelte';
 	import Admin from './Admin.svelte';
+	import Devices from './Devices.svelte';
 	import { getNextFocus } from '@bbc/tv-lrud-spatial';
 	import Filters from './Filters.svelte';
 	import ExportImport from './ExportImport.svelte';
@@ -30,6 +31,7 @@
 		| 'engine'
 		| 'account'
 		| 'admin'
+		| 'devices'
 		| 'filters'
 		| 'export'
 		| 'theme'
@@ -117,6 +119,15 @@
 				icon: 'person',
 				component: InternalAccount
 			});
+			// Televisions are paired to an account, so this belongs with it.
+			if (!tabs.find((tab) => tab.id === 'devices')) {
+				tabs.splice(tabs.length - 1, 0, {
+					id: 'devices',
+					label: $_('layout.devices.title'),
+					icon: 'tv',
+					component: Devices
+				});
+			}
 			fetch('/api/user/me').then(async (resp) => {
 				if (resp.ok) {
 					const me = await resp.json();
@@ -137,7 +148,7 @@
 			});
 		} else {
 			tabs = tabs.filter((tab) => {
-				return tab.id !== 'account' && tab.id !== 'admin';
+				return tab.id !== 'account' && tab.id !== 'admin' && tab.id !== 'devices';
 			});
 		}
 	});
