@@ -86,7 +86,7 @@
 		</nav>
 
 		<nav class="no-wrap center-align">
-			<div class="field label suffix border small">
+			<div class="field label suffix surface-container-highest">
 				<select
 					disabled={changingQuality}
 					value={$castStatus.maxHeight}
@@ -99,7 +99,7 @@
 					{/each}
 				</select>
 				<label>{$_('player.cast.quality')}</label>
-				<i>arrow_drop_down</i>
+				<i>keyboard_arrow_down</i>
 			</div>
 
 			<button class="border" onclick={stopCasting}>
