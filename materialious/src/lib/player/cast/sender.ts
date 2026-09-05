@@ -214,30 +214,43 @@ export async function castVideo(options: {
 
 	const castSession: CastSessionResponse = await response.json();
 
-	const manifestUrl = new URL(castSession.manifestUrl);
-	manifestUrl.searchParams.set('profile', options.profile ?? 'legacy');
-	manifestUrl.searchParams.set('maxHeight', String(options.maxHeight ?? 1080));
+	const load = async (captions: boolean) => {
+		const manifestUrl = new URL(castSession.manifestUrl);
+		manifestUrl.searchParams.set('profile', options.profile ?? 'legacy');
+		manifestUrl.searchParams.set('maxHeight', String(options.maxHeight ?? 1080));
+		if (!captions) manifestUrl.searchParams.set('captions', '0');
 
-	const mediaInfo = new (chromeCast().media.MediaInfo)(
-		manifestUrl.toString(),
-		'application/dash+xml'
-	);
-	mediaInfo.streamType = chromeCast().media.StreamType.BUFFERED;
-	mediaInfo.duration = castSession.duration;
+		const mediaInfo = new (chromeCast().media.MediaInfo)(
+			manifestUrl.toString(),
+			'application/dash+xml'
+		);
+		mediaInfo.streamType = chromeCast().media.StreamType.BUFFERED;
+		mediaInfo.duration = castSession.duration;
 
-	const metadata = new (chromeCast().media.GenericMediaMetadata)();
-	metadata.title = castSession.title;
-	metadata.subtitle = castSession.author;
-	if (options.poster) {
-		metadata.images = [new (chromeCast().Image)(options.poster)];
+		const metadata = new (chromeCast().media.GenericMediaMetadata)();
+		metadata.title = castSession.title;
+		metadata.subtitle = castSession.author;
+		if (options.poster) {
+			metadata.images = [new (chromeCast().Image)(options.poster)];
+		}
+		mediaInfo.metadata = metadata;
+
+		const request = new (chromeCast().media.LoadRequest)(mediaInfo);
+		request.autoplay = true;
+		request.currentTime = Math.max(0, Math.floor(options.startTime ?? 0));
+
+		await session.loadMedia(request);
+	};
+
+	try {
+		await load(true);
+	} catch (error) {
+		// Subtitle tracks are the part of the manifest a player is most likely to
+		// reject - ffmpeg refuses them outright - so rather than failing the cast,
+		// try once more without them and let the viewer watch without subtitles.
+		console.warn('Cast load failed with subtitles, retrying without:', error);
+		await load(false);
 	}
-	mediaInfo.metadata = metadata;
-
-	const request = new (chromeCast().media.LoadRequest)(mediaInfo);
-	request.autoplay = true;
-	request.currentTime = Math.max(0, Math.floor(options.startTime ?? 0));
-
-	await session.loadMedia(request);
 
 	castStatus.update((status) => ({
 		...status,

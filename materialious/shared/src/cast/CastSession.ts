@@ -463,6 +463,40 @@ export class CastSession {
 		}
 	}
 
+	/**
+	 * Fetches a subtitle track for the receiver.
+	 *
+	 * YouTube answers a bare timedtext URL with an empty body: the parameters the
+	 * browser player adds are what make it return actual cues, so the same ones
+	 * are applied here. Only YouTube's own hosts are accepted, so a session id
+	 * cannot be turned into a general purpose proxy.
+	 */
+	async getCaption(target: string): Promise<string> {
+		this.lastUsed = Date.now();
+
+		const url = new URL(target);
+
+		if (url.host !== 'www.youtube.com' && url.host !== 'youtube.com') {
+			throw new Error('Caption url is not whitelisted');
+		}
+
+		url.searchParams.set('fmt', 'vtt');
+		url.searchParams.set('potc', '1');
+		url.searchParams.set('c', this.innertube.session.context.client.clientName);
+		if (this.innertube.session.po_token) {
+			url.searchParams.set('pot', this.innertube.session.po_token);
+		}
+		url.searchParams.delete('xosf');
+
+		const response = await fetch(url, { signal: AbortSignal.timeout(10000) });
+
+		if (!response.ok) {
+			throw new Error(`Captions unavailable (${response.status})`);
+		}
+
+		return await response.text();
+	}
+
 	/** Total byte length a receiver should believe a format has. */
 	async getFormatSize(key: string): Promise<number> {
 		return (await this.getFormatState(key)).totalSize;

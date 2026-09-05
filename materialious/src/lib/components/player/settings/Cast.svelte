@@ -27,8 +27,13 @@
 		if (supported) loadCastSdk();
 	});
 
+	// Connected to a receiver that is playing something else - a video the
+	// viewer navigated away from - means the button should hand it this video
+	// rather than end the session.
+	const castingThisVideo = $derived($castStatus.connected && $castStatus.videoId === video.videoId);
+
 	async function toggleCast() {
-		if ($castStatus.connected) {
+		if (castingThisVideo) {
 			stopCasting();
 			return;
 		}
@@ -56,13 +61,13 @@
 {#if supported && $castStatus.available}
 	<button
 		class="surface-container-highest"
-		class:primary={$castStatus.connected}
+		class:primary={castingThisVideo}
 		disabled={busy}
 		onclick={toggleCast}
-		title={$castStatus.connected
+		title={castingThisVideo
 			? `${$_('player.cast.castingTo')} ${$castStatus.deviceName ?? ''}`
 			: $_('player.cast.title')}
 	>
-		<i>{$castStatus.connected ? 'cast_connected' : 'cast'}</i>
+		<i>{castingThisVideo ? 'cast_connected' : 'cast'}</i>
 	</button>
 {/if}

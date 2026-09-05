@@ -1,14 +1,12 @@
 import { getCastSession } from '@materialious/shared/cast';
 import { error } from '@sveltejs/kit';
-import { parse as tldParse } from 'tldts';
 import { castCorsHeaders } from '$lib/server/cast';
 
 /**
  * Fetches a caption track on the receiver's behalf.
  *
  * Subtitle URLs in the manifest point at YouTube, which a Chromecast cannot
- * read cross-origin. Only YouTube's own hosts are allowed through, so a cast
- * session id can't be turned into a general purpose proxy.
+ * read cross-origin.
  */
 export async function GET({ params, url }) {
 	const session = getCastSession(params.sessionId);
@@ -21,26 +19,18 @@ export async function GET({ params, url }) {
 		throw error(400, 'Missing caption url');
 	}
 
-	let captionUrl: URL;
+	let captions: string;
 	try {
-		captionUrl = new URL(target);
-	} catch {
-		throw error(400, 'Invalid caption url');
+		captions = await session.getCaption(target);
+	} catch (err) {
+		const message = err instanceof Error ? err.message : 'Failed to fetch captions';
+		console.warn('Cast caption fetch failed:', message);
+		throw error(502, message);
 	}
 
-	if (tldParse(captionUrl.host).domain !== 'youtube.com') {
-		throw error(400, 'Caption url is not whitelisted');
-	}
-
-	const response = await fetch(captionUrl, { signal: AbortSignal.timeout(10000) });
-
-	if (!response.ok) {
-		throw error(response.status, 'Failed to fetch captions');
-	}
-
-	return new Response(response.body, {
+	return new Response(captions, {
 		headers: {
-			'content-type': response.headers.get('content-type') ?? 'text/vtt',
+			'content-type': 'text/vtt',
 			'cache-control': 'no-store',
 			...castCorsHeaders
 		}
