@@ -9,15 +9,27 @@
 	import {
 		castStatus,
 		seekTo,
+		setCastQuality,
 		stopCasting,
 		togglePlayPause,
-		onCastMediaEnded
+		onCastMediaEnded,
+		CAST_QUALITIES
 	} from '$lib/player/cast/sender';
 
 	let { video, playlistId }: { video: VideoPlay; playlistId: string | null } = $props();
 
 	let scrubbing = $state(false);
 	let scrubTime = $state(0);
+	let changingQuality = $state(false);
+
+	async function changeQuality(maxHeight: number) {
+		changingQuality = true;
+		try {
+			await setCastQuality(maxHeight);
+		} finally {
+			changingQuality = false;
+		}
+	}
 
 	const displayTime = $derived(scrubbing ? scrubTime : $castStatus.currentTime);
 
@@ -73,10 +85,28 @@
 			<span class="chip">{videoLength($castStatus.duration || video.lengthSeconds)}</span>
 		</nav>
 
-		<button class="border" onclick={stopCasting}>
-			<i>cast</i>
-			<span>{$_('player.cast.stop')}</span>
-		</button>
+		<nav class="no-wrap center-align">
+			<div class="field label suffix border small">
+				<select
+					disabled={changingQuality}
+					value={$castStatus.maxHeight}
+					onchange={(event) => changeQuality(Number(event.currentTarget.value))}
+				>
+					{#each CAST_QUALITIES as quality (quality)}
+						<option value={quality}>
+							{quality === 0 ? $_('player.cast.qualityAuto') : `${quality}p`}
+						</option>
+					{/each}
+				</select>
+				<label>{$_('player.cast.quality')}</label>
+				<i>arrow_drop_down</i>
+			</div>
+
+			<button class="border" onclick={stopCasting}>
+				<i>cast</i>
+				<span>{$_('player.cast.stop')}</span>
+			</button>
+		</nav>
 	</div>
 </div>
 

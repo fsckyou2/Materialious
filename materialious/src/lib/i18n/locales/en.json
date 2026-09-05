@@ -207,7 +207,9 @@
 			"title": "Cast to a device",
 			"castingTo": "Casting to",
 			"stop": "Stop casting",
-			"failed": "Could not start casting"
+			"failed": "Could not start casting",
+			"quality": "Quality",
+			"qualityAuto": "Auto"
 		}
 	},
 	"layout": {

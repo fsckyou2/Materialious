@@ -57,6 +57,8 @@ export async function createCastSession(
 	sessions.set(id, session);
 	startSweeper();
 
+	await session.warmUp();
+
 	return session;
 }
 

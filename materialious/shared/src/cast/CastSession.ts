@@ -33,6 +33,15 @@ type FormatState = {
 
 const SEGMENT_CACHE_LIMIT = 24;
 
+function decodeXmlEntities(value: string): string {
+	return value
+		.replace(/&amp;/g, '&')
+		.replace(/&lt;/g, '<')
+		.replace(/&gt;/g, '>')
+		.replace(/&quot;/g, '"')
+		.replace(/&apos;/g, "'");
+}
+
 /**
  * Drops subtitle tracks from a manifest.
  *
@@ -435,6 +444,25 @@ export class CastSession {
 		return promise;
 	}
 
+	/**
+	 * Absorbs the backoff YouTube imposes on a session's first SABR request.
+	 *
+	 * That first request waits several seconds; later ones return in about a
+	 * tenth of a second. Spending it here, while the viewer is still watching a
+	 * connecting spinner, keeps the receiver from stalling on its own first
+	 * fetch. Failure is not fatal - the receiver would simply wait instead.
+	 */
+	async warmUp(): Promise<void> {
+		const audio = this.formats.find((format) => format.mimeType?.includes('mp4a'));
+		if (!audio) return;
+
+		try {
+			await this.getFormatState(FormatKeyUtils.fromFormat(audio) ?? '');
+		} catch {
+			// Continue regardless; the gateway will retry when asked for real.
+		}
+	}
+
 	/** Total byte length a receiver should believe a format has. */
 	async getFormatSize(key: string): Promise<number> {
 		return (await this.getFormatState(key)).totalSize;
@@ -530,7 +558,11 @@ export class CastSession {
 			.replace(
 				/<BaseURL>(https:\/\/[^<]*timedtext[^<]*)<\/BaseURL>/g,
 				(_match, url: string) =>
-					`<BaseURL>${baseUrl}/caption?url=${encodeURIComponent(url)}</BaseURL>`
+					// The URL is XML encoded in the manifest, so its entities have to
+					// be resolved before it is re-encoded as a query parameter -
+					// otherwise the gateway would fetch a literal "&amp;" separator
+					// and YouTube would ignore every parameter after the first.
+					`<BaseURL>${baseUrl}/caption?url=${encodeURIComponent(decodeXmlEntities(url))}</BaseURL>`
 			);
 
 		return captions ? rewritten : stripTextAdaptationSets(rewritten);

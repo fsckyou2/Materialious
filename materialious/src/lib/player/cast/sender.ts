@@ -1,4 +1,4 @@
-import { writable, type Writable } from 'svelte/store';
+import { get, writable, type Writable } from 'svelte/store';
 
 /**
  * Google Cast sender.
@@ -21,9 +21,16 @@ export type CastStatus = {
 	currentTime: number;
 	duration: number;
 	paused: boolean;
+	/** Height cap currently in force, so the quality picker can show it. */
+	maxHeight: number;
+	/** Thumbnail last sent to the receiver, reused when reloading media. */
+	poster: string | null;
 	/** Set when a cast attempt failed, for surfacing to the viewer. */
 	errorMessage: string | null;
 };
+
+/** Height caps offered while casting. 0 means "let the receiver decide". */
+export const CAST_QUALITIES = [0, 1080, 720, 480, 360] as const;
 
 export const castStatus: Writable<CastStatus> = writable({
 	available: false,
@@ -34,6 +41,8 @@ export const castStatus: Writable<CastStatus> = writable({
 	currentTime: 0,
 	duration: 0,
 	paused: false,
+	maxHeight: 1080,
+	poster: null,
 	errorMessage: null
 });
 
@@ -236,8 +245,32 @@ export async function castVideo(options: {
 		videoId: options.videoId,
 		title: castSession.title,
 		deviceName: session.getCastDevice()?.friendlyName ?? null,
-		duration: castSession.duration
+		duration: castSession.duration,
+		maxHeight: options.maxHeight ?? status.maxHeight,
+		poster: options.poster ?? status.poster
 	}));
+}
+
+/**
+ * Re-sends the current video with a different height cap.
+ *
+ * The stock receiver picks its own rendition and offers no way to override it,
+ * so a quality choice is expressed by handing it a manifest that only contains
+ * the renditions the viewer allowed, resuming where it left off. The server
+ * side session is reused, so this costs one manifest fetch.
+ */
+export async function setCastQuality(maxHeight: number): Promise<void> {
+	const status = get(castStatus);
+	if (!status.videoId) return;
+
+	await castVideo({
+		videoId: status.videoId,
+		startTime: status.currentTime,
+		poster: status.poster ?? undefined,
+		maxHeight: maxHeight || 2160
+	});
+
+	castStatus.update((current) => ({ ...current, maxHeight }));
 }
 
 export function togglePlayPause(): void {
@@ -266,18 +299,41 @@ export function stopCasting(): void {
 	}));
 }
 
-/** Fires when the receiver reaches the end of a video, for playlist advance. */
-export function onCastMediaEnded(callback: () => void): () => void {
-	if (!remoteController) return () => {};
+const MEDIA_NAMESPACE = 'urn:x-cast:com.google.cast.media';
 
-	const events = cast().framework.RemotePlayerEventType;
-	const handler = () => {
-		const state = remotePlayer.playerState;
-		if (state === chromeCast().media.PlayerState.IDLE && remotePlayer.savedPlayerState === null) {
-			callback();
+/**
+ * Fires when the receiver finishes a video, for playlist advance.
+ *
+ * The remote player only reports that it went idle, not why, so this reads the
+ * receiver's own media status instead: an idle reason of FINISHED is the end of
+ * the video, while INTERRUPTED or CANCELLED mean something else replaced it.
+ */
+export function onCastMediaEnded(callback: () => void): () => void {
+	const session = cast()?.framework?.CastContext.getInstance().getCurrentSession();
+	if (!session) return () => {};
+
+	const listener = (_namespace: string, message: string) => {
+		try {
+			const payload = JSON.parse(message);
+			if (payload.type !== 'MEDIA_STATUS') return;
+
+			for (const status of payload.status ?? []) {
+				if (status.idleReason === 'FINISHED') {
+					callback();
+					return;
+				}
+			}
+		} catch {
+			// Not a message we can read; nothing to do.
 		}
 	};
 
-	remoteController.addEventListener(events.PLAYER_STATE_CHANGED, handler);
-	return () => remoteController.removeEventListener(events.PLAYER_STATE_CHANGED, handler);
+	session.addMessageListener(MEDIA_NAMESPACE, listener);
+	return () => {
+		try {
+			session.removeMessageListener(MEDIA_NAMESPACE, listener);
+		} catch {
+			// The session may already be gone.
+		}
+	};
 }

@@ -16,7 +16,8 @@ export async function GET({ params, request }) {
 		throw error(404, 'Cast session not found or expired');
 	}
 
-	const key = decodeURIComponent(params.key);
+	// SvelteKit has already decoded the route parameter.
+	const key = params.key;
 
 	let total: number;
 	let mimeType: string;
