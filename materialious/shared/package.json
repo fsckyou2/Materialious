@@ -18,6 +18,10 @@
 		"./download": {
 			"types": "./dist/download/index.d.ts",
 			"default": "./dist/download/index.js"
+		},
+		"./cast": {
+			"types": "./dist/cast/index.d.ts",
+			"default": "./dist/cast/index.js"
 		}
 	},
 	"files": [
