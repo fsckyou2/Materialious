@@ -15,6 +15,18 @@ export async function loadEntirePlaylist(
 	const ignoreVideos = new Set<string>();
 
 	let newPlaylist = await getPlaylist(playlistId, 1);
+
+	// A mix is extended for as long as it is watched, so there is no end to walk
+	// to. Take the queue as it stands.
+	if (newPlaylist.isInfinite) {
+		processVideos(newPlaylist.videos, ignoreVideos, playlistVideos);
+
+		const combined = { videos: playlistVideos, info: newPlaylist };
+		playlistCacheStore.set({ [playlistId]: combined });
+
+		return combined;
+	}
+
 	if (newPlaylist.getContinuation) {
 		let firstVideoId: string = '';
 

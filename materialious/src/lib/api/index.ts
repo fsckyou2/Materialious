@@ -39,6 +39,7 @@ import {
 	postSubscribeYTjs
 } from './youtubejs/subscriptions';
 import { getPlaylistYTjs } from './youtubejs/playlist';
+import { getMixYTjs, isMixPlaylistId } from './youtubejs/mix';
 import {
 	buildDownloadURL,
 	getDownloadFormatsElectron,
@@ -438,6 +439,11 @@ export async function getPlaylist(
 	fetchOptions: RequestInit = {}
 ): Promise<PlaylistPage> {
 	if (isYTBackend() || useEngineFallback('Playlist')) {
+		// Mixes are not served as playlists and have to be read from the watch queue.
+		if (isMixPlaylistId(playlistId)) {
+			return await getMixYTjs(playlistId);
+		}
+
 		return await getPlaylistYTjs(playlistId);
 	}
 

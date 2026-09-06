@@ -85,7 +85,9 @@
 </article>
 {:else}
 <article class="border padding">
-	{#if playlist.videos.length > 0}
+	<!-- Play all resumes by walking every video, and shuffle draws from the whole
+	list; neither means anything on a mix, which YouTube extends indefinitely. -->
+	{#if playlist.videos.length > 0 && !playlist.info.isInfinite}
 		<nav>
 			<button onclick={loadLastWatched} class="button circle extra no-margin">
 				<i>play_arrow</i>
