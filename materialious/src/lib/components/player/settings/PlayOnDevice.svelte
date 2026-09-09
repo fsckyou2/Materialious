@@ -69,7 +69,9 @@
 		title={$_('player.playOn.title')}
 	>
 		<i>tv</i>
-		<menu class="no-wrap mobile">
+		<!-- Without this the menu opens downwards and is clipped by the bottom of
+		     the video, since the control bar sits at the player's edge. -->
+		<menu class="no-wrap mobile player-settings">
 			{#each devices as device (device.id)}
 				<li role="presentation" onclick={() => play(device)}>
 					<nav class="no-wrap" style="width: 100%;">
