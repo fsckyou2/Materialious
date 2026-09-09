@@ -231,6 +231,17 @@ export function getSequelize(): {
 		lastSeen: {
 			type: DataTypes.DATE,
 			allowNull: true
+		},
+		// The device's own public key, which the browser seals the master key to.
+		publicKey: {
+			type: DataTypes.STRING,
+			allowNull: true
+		},
+		// That sealed key, which only the device can open. The server stores it
+		// but can never read it.
+		masterKeyCipher: {
+			type: DataTypes.STRING(1024),
+			allowNull: true
 		}
 	});
 
@@ -283,5 +294,41 @@ export interface DeviceModel extends Model {
 	tokenHash: string;
 	created: Date;
 	lastSeen: Date | null;
+	publicKey: string | null;
+	masterKeyCipher: string | null;
 	UserId: string;
+}
+
+/**
+ * Adds columns to tables that already exist.
+ *
+ * `sync()` creates missing tables but leaves existing ones alone, so a
+ * television paired before these columns existed would keep a table without
+ * them and every write would fail.
+ */
+export async function migrateDevices(): Promise<void> {
+	const { sequelize, DeviceTable } = getSequelize();
+	const queryInterface = sequelize.getQueryInterface();
+
+	let existing: Record<string, unknown>;
+	try {
+		existing = await queryInterface.describeTable(DeviceTable.getTableName() as string);
+	} catch {
+		// The table has not been created yet; sync() will build it complete.
+		return;
+	}
+
+	if (!('publicKey' in existing)) {
+		await queryInterface.addColumn(DeviceTable.getTableName() as string, 'publicKey', {
+			type: DataTypes.STRING,
+			allowNull: true
+		});
+	}
+
+	if (!('masterKeyCipher' in existing)) {
+		await queryInterface.addColumn(DeviceTable.getTableName() as string, 'masterKeyCipher', {
+			type: DataTypes.STRING(1024),
+			allowNull: true
+		});
+	}
 }

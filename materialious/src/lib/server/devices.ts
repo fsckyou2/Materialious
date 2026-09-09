@@ -41,6 +41,8 @@ type PendingPairing = {
 	deviceId: string;
 	token: string;
 	name: string;
+	/** The device's public key, which the master key is later sealed to. */
+	publicKey: string | null;
 	expiresAt: number;
 };
 
@@ -80,7 +82,10 @@ function prunePairings(): void {
  * Begins pairing. The television displays the returned code; nothing is
  * persisted until somebody signed in claims it.
  */
-export function startPairing(name: string): {
+export function startPairing(
+	name: string,
+	publicKey: string | null = null
+): {
 	code: string;
 	deviceId: string;
 	token: string;
@@ -102,6 +107,7 @@ export function startPairing(name: string): {
 		deviceId: randomBytes(16).toString('hex'),
 		token: randomBytes(32).toString('base64url'),
 		name,
+		publicKey,
 		expiresAt: Date.now() + PAIRING_TTL_MS
 	};
 
@@ -114,7 +120,7 @@ export function startPairing(name: string): {
 export async function claimPairing(
 	code: string,
 	userId: string
-): Promise<{ deviceId: string; name: string } | null> {
+): Promise<{ deviceId: string; name: string; publicKey: string | null } | null> {
 	prunePairings();
 
 	const pairing = pendingPairings.get(code.toUpperCase());
@@ -130,10 +136,16 @@ export async function claimPairing(
 		tokenHash: hashToken(pairing.token),
 		created: new Date(),
 		lastSeen: null,
+		publicKey: pairing.publicKey,
+		masterKeyCipher: null,
 		UserId: userId
 	});
 
-	return { deviceId: pairing.deviceId, name: pairing.name };
+	return {
+		deviceId: pairing.deviceId,
+		name: pairing.name,
+		publicKey: pairing.publicKey
+	};
 }
 
 /**
@@ -271,4 +283,38 @@ export function getStatus(deviceId: string): DeviceStatus | null {
 export async function touchDevice(deviceId: string): Promise<void> {
 	const { DeviceTable } = getSequelize();
 	await DeviceTable.update({ lastSeen: new Date() }, { where: { id: deviceId } });
+}
+
+/**
+ * Stores the account's master key, sealed to one device.
+ *
+ * The server keeps this but can never read it: it is sealed to a public key
+ * whose secret half never leaves the television.
+ */
+export async function storeSealedMasterKey(
+	deviceId: string,
+	userId: string,
+	sealed: string
+): Promise<boolean> {
+	const { DeviceTable } = getSequelize();
+
+	const [updated] = await DeviceTable.update(
+		{ masterKeyCipher: sealed },
+		{ where: { id: deviceId, UserId: userId } }
+	);
+
+	return updated > 0;
+}
+
+export async function getSealedMasterKey(deviceId: string): Promise<string | null> {
+	const { DeviceTable } = getSequelize();
+	const device = (await DeviceTable.findByPk(deviceId)) as DeviceModel | null;
+	return device?.masterKeyCipher ?? null;
+}
+
+export async function getDevicePublicKey(deviceId: string, userId: string): Promise<string | null> {
+	const { DeviceTable } = getSequelize();
+	const device = (await DeviceTable.findByPk(deviceId)) as DeviceModel | null;
+	if (!device || device.UserId !== userId) return null;
+	return device.publicKey ?? null;
 }

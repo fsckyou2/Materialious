@@ -3,7 +3,10 @@ import z from 'zod';
 import { startPairing } from '$lib/server/devices';
 
 const zPairSchema = z.object({
-	name: z.string().min(1).max(64)
+	name: z.string().min(1).max(64),
+	// Base64 public key the master key will be sealed to, if this device wants
+	// to be able to read subscriptions and history.
+	publicKey: z.string().min(1).max(256).optional()
 });
 
 /**
@@ -20,7 +23,7 @@ export async function POST({ request }) {
 		throw error(400, 'A device name is required');
 	}
 
-	const pairing = startPairing(data.data.name);
+	const pairing = startPairing(data.data.name, data.data.publicKey ?? null);
 
 	return json({
 		deviceId: pairing.deviceId,

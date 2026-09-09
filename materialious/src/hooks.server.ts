@@ -1,5 +1,5 @@
 import { isOwnBackend } from '$lib/shared';
-import { getSequelize } from '$lib/server/database';
+import { getSequelize, migrateDevices } from '$lib/server/database';
 import { authenticateDeviceByToken } from '$lib/server/devices';
 import { unsign } from 'cookie-signature';
 import { env } from '$env/dynamic/private';
@@ -33,6 +33,7 @@ export async function handle({ event, resolve }) {
 	if (!sequelizeAuthenticated) {
 		await sequelize.sequelize.sync();
 		await sequelize.sequelize.authenticate();
+		await migrateDevices();
 		sequelizeAuthenticated = true;
 	}
 

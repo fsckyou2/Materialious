@@ -1,3 +1,6 @@
+import sodium from 'libsodium-wrappers-sumo';
+import { getRawKey } from '$lib/api/backend/encryption';
+
 /**
  * Televisions paired to this account.
  *
@@ -13,6 +16,13 @@ export type DeviceStatus = {
 	currentTime: number;
 	duration: number;
 	updatedAt: number;
+};
+
+export type ClaimedDevice = {
+	deviceId: string;
+	name: string;
+	/** Base64 key the master key is sealed to, when the device offered one. */
+	publicKey: string | null;
 };
 
 export type PairedDevice = {
@@ -45,12 +55,51 @@ export async function listDevices(): Promise<PairedDevice[]> {
 	return devices;
 }
 
-/** Claims a code displayed on a television. */
-export async function pairDevice(code: string): Promise<{ deviceId: string; name: string }> {
-	return request('/api/devices/claim', {
+/**
+ * Claims a code displayed on a television, and hands it the master key.
+ *
+ * Subscriptions and history are encrypted with a key this server never sees, so
+ * a television can only read them if a browser that holds the key gives it one.
+ * It is sealed to the device's own public key, so it is readable by that
+ * television and nothing else - the instance stores it without being able to
+ * open it.
+ */
+export async function pairDevice(code: string): Promise<ClaimedDevice> {
+	const device = await request<ClaimedDevice>('/api/devices/claim', {
 		method: 'POST',
 		headers: { 'content-type': 'application/json' },
 		body: JSON.stringify({ code })
+	});
+
+	if (device.publicKey) {
+		await sealMasterKeyFor(device.deviceId, device.publicKey);
+	}
+
+	return device;
+}
+
+async function sealMasterKeyFor(deviceId: string, publicKey: string): Promise<void> {
+	const rawKey = await getRawKey();
+
+	// Without a master key in this browser there is nothing to hand over; the
+	// television still pairs and plays, it just cannot read subscriptions.
+	if (!rawKey) return;
+
+	await sodium.ready;
+
+	// Standard base64 both ways, so the device can decode it with the platform
+	// decoder rather than a URL-safe variant.
+	const sealed = sodium.crypto_box_seal(
+		rawKey,
+		sodium.from_base64(publicKey, sodium.base64_variants.ORIGINAL)
+	);
+
+	await request(`/api/devices/${deviceId}/key`, {
+		method: 'POST',
+		headers: { 'content-type': 'application/json' },
+		body: JSON.stringify({
+			sealed: sodium.to_base64(sealed, sodium.base64_variants.ORIGINAL)
+		})
 	});
 }
 
