@@ -136,6 +136,21 @@ export async function claimPairing(
 	return { deviceId: pairing.deviceId, name: pairing.name };
 }
 
+/**
+ * Resolves a bare device token to its device.
+ *
+ * Used where the device id is not in the path - a television calling the rest
+ * of the API as its owner carries only the token.
+ */
+export async function authenticateDeviceByToken(token: string): Promise<DeviceModel | null> {
+	const { DeviceTable } = getSequelize();
+	const device = (await DeviceTable.findOne({
+		where: { tokenHash: hashToken(token) }
+	})) as DeviceModel | null;
+
+	return device;
+}
+
 /** Resolves a device's own token to the device, for its stream and reports. */
 export async function authenticateDevice(
 	deviceId: string,

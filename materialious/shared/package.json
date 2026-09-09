@@ -22,6 +22,10 @@
 		"./cast": {
 			"types": "./dist/cast/index.d.ts",
 			"default": "./dist/cast/index.js"
+		},
+		"./browse": {
+			"types": "./dist/browse/index.d.ts",
+			"default": "./dist/browse/index.js"
 		}
 	},
 	"files": [
