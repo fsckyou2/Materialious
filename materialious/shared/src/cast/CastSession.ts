@@ -566,6 +566,13 @@ export class CastSession {
 
 				if (height > maxHeight) return true;
 
+				// Segments are located by the `sidx` box, which only ISO-BMFF
+				// carries: WebM keeps its index in Cues instead. Offering a WebM
+				// rendition therefore hands the player something this gateway
+				// cannot serve, and a player that picks one fails on its first
+				// segment rather than falling back.
+				if (!mimeType.includes('mp4')) return true;
+
 				if (profile === 'legacy') {
 					// Everything a first generation Chromecast can decode, and
 					// nothing it cannot.
