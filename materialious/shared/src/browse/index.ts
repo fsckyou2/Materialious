@@ -361,6 +361,8 @@ export type ChannelPage = {
 	name: string;
 	thumbnail: string | null;
 	description: string;
+	/** "1.2M subscribers", as YouTube phrases it. */
+	subscriberText: string;
 	videos: BrowseVideo[];
 	continuation: string | null;
 };
@@ -399,11 +401,14 @@ export async function getChannel(
 		// failing the whole page over.
 	}
 
+	const header = channel.header as { subscribers?: { toString(): string } } | undefined;
+
 	return {
 		channelId,
 		name: channel.metadata?.title ?? '',
 		thumbnail: bestThumbnail(channel.metadata?.avatar as { url: string; width?: number }[]),
 		description: channel.metadata?.description ?? '',
+		subscriberText: header?.subscribers?.toString() ?? '',
 		videos,
 		continuation
 	};
