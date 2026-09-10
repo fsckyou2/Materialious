@@ -486,6 +486,9 @@ const FEED_CONCURRENCY = 8;
 /** How many rounds deeper one request will go looking for older videos. */
 const FEED_MAX_DEEPENING = 3;
 
+/** How long one channel may hold up a feed of a hundred and sixty others. */
+const CHANNEL_TIMEOUT_MS = 10_000;
+
 type ChannelFeed = {
 	videos: BrowseVideo[];
 	/** Token for this channel's next page, or null once it is exhausted. */
@@ -538,6 +541,21 @@ async function fetchChannel(
 }
 
 /**
+ * Gives up waiting after a while, without giving up on the work.
+ *
+ * The request carries on and fills the cache, so a channel that answers slowly
+ * is merely late to the feed rather than absent from it.
+ */
+function withDeadline(work: Promise<ChannelFeed>, fallback: ChannelFeed): Promise<ChannelFeed> {
+	return Promise.race([
+		work,
+		new Promise<ChannelFeed>((resolve) => {
+			setTimeout(() => resolve(fallback), CHANNEL_TIMEOUT_MS).unref?.();
+		})
+	]);
+}
+
+/**
  * A channel's videos, from memory where possible.
  *
  * A stale copy is served immediately and refreshed behind it: with a hundred
@@ -551,7 +569,13 @@ async function loadChannel(
 ): Promise<ChannelFeed> {
 	const cached = feedCache.get(`${kind}:${channelId}`);
 
-	if (!cached) return fetchChannel(channelId, kind, cacheDir);
+	if (!cached) {
+		return withDeadline(fetchChannel(channelId, kind, cacheDir), {
+			videos: [],
+			next: null,
+			at: 0
+		});
+	}
 
 	if (Date.now() - cached.at >= FEED_CACHE_MS) {
 		void fetchChannel(channelId, kind, cacheDir);
