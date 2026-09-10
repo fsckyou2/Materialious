@@ -191,6 +191,8 @@ export async function listDevices(userId: string): Promise<
 		online: boolean;
 		status: DeviceStatus | null;
 		lastSeen: Date | null;
+		publicKey: string | null;
+		hasAccountKey: boolean;
 	}[]
 > {
 	const { DeviceTable } = getSequelize();
@@ -201,7 +203,11 @@ export async function listDevices(userId: string): Promise<
 		name: device.name,
 		online: connections.has(device.id),
 		status: statuses.get(device.id) ?? null,
-		lastSeen: device.lastSeen
+		lastSeen: device.lastSeen,
+		publicKey: device.publicKey ?? null,
+		// The sealed key itself stays server side; the browser only needs to know
+		// whether one is waiting.
+		hasAccountKey: !!device.masterKeyCipher
 	}));
 }
 

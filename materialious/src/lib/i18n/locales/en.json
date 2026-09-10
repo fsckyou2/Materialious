@@ -398,7 +398,11 @@
 			"none": "No televisions paired yet.",
 			"online": "Ready",
 			"offline": "Not connected",
-			"playing": "Playing"
+			"playing": "Playing",
+			"noAccountKey": "cannot read your subscriptions",
+			"sendKey": "Send key",
+			"keySent": "Sent your account key to {{name}}",
+			"keyFailed": "Could not send the account key"
 		}
 	},
 	"subscribe": "Subscribe",

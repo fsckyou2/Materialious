@@ -31,6 +31,10 @@ export type PairedDevice = {
 	online: boolean;
 	status: DeviceStatus | null;
 	lastSeen: string | null;
+	/** The device's own key, present once it has offered one. */
+	publicKey: string | null;
+	/** Whether this device has been given the account key yet. */
+	hasAccountKey: boolean;
 };
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -72,18 +76,40 @@ export async function pairDevice(code: string): Promise<ClaimedDevice> {
 	});
 
 	if (device.publicKey) {
+		// A failure here leaves a paired television that cannot read the account,
+		// which is worth reporting rather than swallowing.
 		await sealMasterKeyFor(device.deviceId, device.publicKey);
 	}
 
 	return device;
 }
 
+/**
+ * Hands an already paired television the account key.
+ *
+ * Pairing tries this on its own, but it cannot succeed from a browser that has
+ * no master key loaded, and it used to fail silently - leaving a television that
+ * looked paired but could see nothing. This makes it something the viewer can
+ * ask for directly, without unpairing.
+ */
+export async function sendAccountKey(device: PairedDevice): Promise<void> {
+	if (!device.publicKey) {
+		throw new Error('That television has not offered a key to seal to. Pair it again.');
+	}
+
+	await sealMasterKeyFor(device.id, device.publicKey);
+}
+
 async function sealMasterKeyFor(deviceId: string, publicKey: string): Promise<void> {
 	const rawKey = await getRawKey();
 
-	// Without a master key in this browser there is nothing to hand over; the
-	// television still pairs and plays, it just cannot read subscriptions.
-	if (!rawKey) return;
+	// Silence here is what made this hard to diagnose: pairing reported success
+	// while the television was left unable to read anything.
+	if (!rawKey) {
+		throw new Error(
+			'This browser does not have your account key loaded. Sign in again, then send the key.'
+		);
+	}
 
 	await sodium.ready;
 

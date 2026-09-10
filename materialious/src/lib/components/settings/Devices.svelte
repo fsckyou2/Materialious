@@ -2,7 +2,13 @@
 	import { onMount } from 'svelte';
 	import { _ } from '$lib/i18n';
 	import { addToast } from '../Toast.svelte';
-	import { listDevices, pairDevice, unpairDevice, type PairedDevice } from '$lib/devices';
+	import {
+		listDevices,
+		pairDevice,
+		sendAccountKey,
+		unpairDevice,
+		type PairedDevice
+	} from '$lib/devices';
 
 	let devices: PairedDevice[] = $state([]);
 	let code = $state('');
@@ -33,6 +39,23 @@
 			error = err instanceof Error ? err.message : $_('layout.devices.pairFailed');
 		} finally {
 			pairing = false;
+		}
+	}
+
+	let sendingKeyTo = $state('');
+
+	async function sendKey(device: PairedDevice) {
+		sendingKeyTo = device.id;
+		try {
+			await sendAccountKey(device);
+			addToast({ data: { text: $_('layout.devices.keySent', { name: device.name }) } });
+			await refresh();
+		} catch (err) {
+			addToast({
+				data: { text: err instanceof Error ? err.message : $_('layout.devices.keyFailed') }
+			});
+		} finally {
+			sendingKeyTo = '';
 		}
 	}
 
@@ -103,8 +126,25 @@
 						{:else}
 							{$_('layout.devices.offline')}
 						{/if}
+						{#if !device.hasAccountKey}
+							&middot; {$_('layout.devices.noAccountKey')}
+						{/if}
 					</p>
 				</div>
+				{#if !device.hasAccountKey}
+					<button
+						class="border"
+						disabled={sendingKeyTo === device.id}
+						onclick={() => sendKey(device)}
+					>
+						{#if sendingKeyTo === device.id}
+							<progress class="circle small"></progress>
+						{:else}
+							<i>key</i>
+						{/if}
+						<span>{$_('layout.devices.sendKey')}</span>
+					</button>
+				{/if}
 				<button class="border" onclick={() => unpair(device)}>
 					<i>link_off</i>
 					<span>{$_('layout.devices.unpair')}</span>
