@@ -58,7 +58,12 @@
 	}
 </script>
 
-<button bind:this={settingsButton} class="surface-container-highest" onclick={onSettingsClick} onblur={onSettingsBlur}>
+<button
+	bind:this={settingsButton}
+	class="surface-container-highest"
+	onclick={onSettingsClick}
+	onblur={onSettingsBlur}
+>
 	<i>settings</i>
 	<menu class="no-wrap mobile player-settings">
 		{#if playerSettings !== 'root'}

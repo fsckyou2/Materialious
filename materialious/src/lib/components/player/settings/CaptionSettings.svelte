@@ -97,7 +97,12 @@
 </script>
 
 {#if video.captions.length > 0 && !video.liveNow}
-	<button bind:this={ccButton} class="surface-container-highest" onclick={onCCClick} onblur={onCCBlur}>
+	<button
+		bind:this={ccButton}
+		class="surface-container-highest"
+		onclick={onCCClick}
+		onblur={onCCBlur}
+	>
 		<i>closed_caption</i>
 		<menu class="no-wrap mobile player-settings" id="cc-menu" data-ui="#cc-menu">
 			<li role="presentation" data-ui="#cc-menu" onclick={() => setTextTrackVisibility(false)}>
@@ -187,7 +192,9 @@
 								style="color:{preset.color};background:{preset.backgroundColor};padding:4px 10px;border-radius:4px;font-size:13px;font-weight:500;width:100%;text-align:center;"
 								>Aa</span
 							>
-							<span style="font-size:0.625rem;line-height:1;white-space:nowrap;">{preset.label}</span>
+							<span style="font-size:0.625rem;line-height:1;white-space:nowrap;"
+								>{preset.label}</span
+							>
 						</button>
 					{/each}
 				</div>

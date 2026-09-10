@@ -65,25 +65,31 @@
 			</button>
 		</nav>
 
-		<nav class="no-wrap">
-			<span class="chip">{videoLength(displayTime)}</span>
-			<input
-				class="cast-seek"
-				type="range"
-				min="0"
-				max={$castStatus.duration || video.lengthSeconds}
-				value={displayTime}
-				oninput={(event) => {
-					scrubbing = true;
-					scrubTime = Number(event.currentTarget.value);
-				}}
-				onchange={(event) => {
-					seekTo(Number(event.currentTarget.value));
-					scrubbing = false;
-				}}
-			/>
-			<span class="chip">{videoLength($castStatus.duration || video.lengthSeconds)}</span>
-		</nav>
+		{#if $castStatus.live}
+			<nav class="no-wrap center-align">
+				<span class="chip red white-text">{$_('thumbnail.live')}</span>
+			</nav>
+		{:else}
+			<nav class="no-wrap">
+				<span class="chip">{videoLength(displayTime)}</span>
+				<input
+					class="cast-seek"
+					type="range"
+					min="0"
+					max={$castStatus.duration || video.lengthSeconds}
+					value={displayTime}
+					oninput={(event) => {
+						scrubbing = true;
+						scrubTime = Number(event.currentTarget.value);
+					}}
+					onchange={(event) => {
+						seekTo(Number(event.currentTarget.value));
+						scrubbing = false;
+					}}
+				/>
+				<span class="chip">{videoLength($castStatus.duration || video.lengthSeconds)}</span>
+			</nav>
+		{/if}
 
 		<nav class="no-wrap center-align">
 			<div class="field label suffix surface-container-highest">

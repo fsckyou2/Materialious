@@ -6,12 +6,15 @@ import {
 	type ResponseFilter,
 	type SabrPlayerAdapter
 } from 'googlevideo/sabr-streaming-adapter';
-import { buildSabrFormat, FormatKeyUtils } from 'googlevideo/utils';
+import { buildSabrFormat, concatenateChunks, FormatKeyUtils } from 'googlevideo/utils';
+import { CompositeBuffer, UmpReader } from 'googlevideo/ump';
+import { LiveMetadata } from 'googlevideo/protos';
 import type { CacheManager, RequestMetadataManager } from 'googlevideo/utils';
 import type { SabrFormat } from 'googlevideo/shared-types';
 import { getDownloadSession } from '../download/session.js';
 import { parseSegmentIndex, type SegmentIndexEntry } from './sidx.js';
 import { parseWebmIndex } from './webm.js';
+import { buildLiveManifest, type LiveFormat } from './liveManifest.js';
 
 /**
  * Codec profiles a receiver can be asked to play.
@@ -33,6 +36,45 @@ type FormatState = {
 };
 
 const SEGMENT_CACHE_LIMIT = 24;
+
+/** How long the live edge is trusted before being looked up again. */
+const LIVE_EDGE_TTL_MS = 10_000;
+
+/**
+ * A live segment the server has not produced yet.
+ *
+ * Distinct from a failure, because a receiver that runs into the live edge
+ * should wait and ask again rather than give up on the stream.
+ */
+export class SegmentNotReadyError extends Error {}
+
+/** The UMP part carrying a live stream's head and seekable window. */
+const LIVE_METADATA_PART = 31;
+
+/**
+ * Pulls the live metadata out of a raw UMP response.
+ *
+ * `SabrUmpProcessor` handles the parts a player needs and ignores this one, so
+ * the stream is read a second time, cheaply, looking only for that part.
+ */
+function readLiveMetadata(chunks: Uint8Array[]): LiveMetadata | undefined {
+	if (chunks.length === 0) return undefined;
+
+	let live: LiveMetadata | undefined;
+
+	try {
+		const reader = new UmpReader(new CompositeBuffer([concatenateChunks(chunks)]));
+		reader.read((part) => {
+			if (part.type === LIVE_METADATA_PART) {
+				live = LiveMetadata.decode(concatenateChunks(part.data.chunks));
+			}
+		});
+	} catch {
+		// A stream that will not parse simply has no metadata to offer.
+	}
+
+	return live;
+}
 
 function decodeXmlEntities(value: string): string {
 	return value
@@ -138,6 +180,7 @@ export class CastSession {
 	private readonly pendingStates = new Map<string, Promise<FormatState>>();
 	private readonly segmentCache = new Map<string, Uint8Array>();
 	private readonly pendingSegments = new Map<string, Promise<Uint8Array>>();
+	private liveEdge?: { metadata: LiveMetadata | undefined; at: number };
 
 	private constructor(
 		public readonly id: string,
@@ -272,6 +315,23 @@ export class CastSession {
 		startTime: number | null;
 		isInit: boolean;
 	}): Promise<Uint8Array> {
+		return (await this.sabrRequestWithHeader(options)).data;
+	}
+
+	/**
+	 * As `sabrRequest`, but keeps the media header.
+	 *
+	 * Live streams publish no index, so the sequence number the server answers
+	 * with is the only way to find out where the live edge currently is.
+	 */
+	private async sabrRequestWithHeader(options: {
+		url: string;
+		headers: Record<string, string>;
+		startTime: number | null;
+		isInit: boolean;
+		/** Live probes ask past the edge, where an empty answer is the answer. */
+		allowEmpty?: boolean;
+	}): Promise<{ data: Uint8Array; sequenceNumber: number | null; live?: LiveMetadata }> {
 		if (!this.adapter.requestInterceptor || !this.adapter.responseInterceptor) {
 			throw new Error('SABR adapter is not attached');
 		}
@@ -300,15 +360,22 @@ export class CastSession {
 		const metadata = this.adapter.requestMetadataManager?.getRequestMetadata(request.url);
 		let data: Uint8Array | undefined;
 
+		let live: LiveMetadata | undefined;
+
 		if (metadata && response.headers.get('content-type') === 'application/vnd.yt-ump') {
 			const processor = new SabrUmpProcessor(metadata, this.adapter.cache ?? undefined);
 			const reader = response.body?.getReader();
 
 			if (!reader) throw new Error('SABR response had no body');
 
+			// Kept only for live, where the answer is a part the processor
+			// itself does not surface.
+			const chunks: Uint8Array[] = [];
+
 			for (;;) {
 				const { value, done } = await reader.read();
 				if (done) break;
+				if (options.allowEmpty) chunks.push(value);
 				const result = await processor.processChunk(value);
 				if (result?.data) {
 					data = result.data;
@@ -316,6 +383,8 @@ export class CastSession {
 					break;
 				}
 			}
+
+			if (options.allowEmpty) live = readLiveMetadata(chunks);
 		} else {
 			data = new Uint8Array(await response.arrayBuffer());
 		}
@@ -342,11 +411,17 @@ export class CastSession {
 
 		const resolved = (handled?.data as Uint8Array | undefined) ?? data;
 
-		if (!resolved) {
+		if (!resolved && !options.allowEmpty) {
 			throw new Error('SABR request produced no media data');
 		}
 
-		return resolved;
+		const sequence = metadata?.streamInfo?.mediaHeader?.sequenceNumber;
+
+		return {
+			data: resolved ?? new Uint8Array(0),
+			sequenceNumber: sequence === undefined ? null : Number(sequence),
+			live
+		};
 	}
 
 	private formatUrl(format: SabrFormat): string {
@@ -463,6 +538,10 @@ export class CastSession {
 	 * fetch. Failure is not fatal - the receiver would simply wait instead.
 	 */
 	async warmUp(): Promise<void> {
+		// Live has no index to parse ahead of time, and asking for one only
+		// burns a request that is bound to fail.
+		if (this.source === 'live') return;
+
 		const audio = this.formats.find((format) => format.mimeType?.includes('mp4a'));
 		if (!audio) return;
 
@@ -505,6 +584,165 @@ export class CastSession {
 		}
 
 		return await response.text();
+	}
+
+	/**
+	 * How long each live segment runs, which is what the manifest's segment
+	 * numbering is built on.
+	 */
+	get targetDurationSeconds(): number {
+		const withTarget = (this.info.streaming_data?.adaptive_formats ?? []).find(
+			(format) => (format as { target_duration_dec?: number }).target_duration_dec
+		) as { target_duration_dec?: number } | undefined;
+
+		return withTarget?.target_duration_dec ?? 5;
+	}
+
+	/**
+	 * Finds the segment at the live edge.
+	 *
+	 * There is no index to read it from, so the server is asked for a time far
+	 * beyond the present: it answers with the newest segment it has, and the
+	 * sequence number on that answer is the edge. Cached briefly, because every
+	 * manifest refresh would otherwise repeat it.
+	 */
+	/**
+	 * Where the stream currently is, as YouTube reports it.
+	 *
+	 * Asking for media past the live edge returns no media at all, but it does
+	 * return the live metadata part, which carries the head and the seekable
+	 * window. That makes it the cheapest possible probe: one request, no bytes.
+	 */
+	private async getLiveMetadata(): Promise<LiveMetadata | undefined> {
+		const now = Date.now();
+		if (this.liveEdge && now - this.liveEdge.at < LIVE_EDGE_TTL_MS) {
+			return this.liveEdge.metadata;
+		}
+
+		const format =
+			this.formats.find((candidate) => candidate.mimeType?.includes('mp4a')) ?? this.formats[0];
+
+		if (!format) return undefined;
+
+		const pastTheEdge = 10_000_000;
+		this.adapter.playerTime = pastTheEdge;
+
+		const { live } = await this.sabrRequestWithHeader({
+			url: this.formatUrl(format),
+			headers: {},
+			startTime: pastTheEdge,
+			isInit: false,
+			allowEmpty: true
+		});
+
+		this.liveEdge = { metadata: live, at: now };
+
+		return live;
+	}
+
+	/**
+	 * The window a viewer may move around in, in segments.
+	 *
+	 * Segments are numbered by presentation time rather than by YouTube's own
+	 * sequence numbers: those two drift apart, because a segment is only
+	 * approximately its target duration, and the gateway addresses media by
+	 * time. Numbering by time keeps the manifest and the fetches consistent
+	 * with each other.
+	 */
+	private async getLiveWindow(): Promise<{ edge: number; first: number }> {
+		const target = this.targetDurationSeconds;
+		const live = await this.getLiveMetadata();
+
+		if (!live) return { edge: 0, first: 0 };
+
+		const headSeconds = Number(live.headTimeMs ?? 0) / 1000;
+		const scale = live.minSeekableTimescale || 1000;
+		const firstSeconds = Number(live.minSeekableTimeTicks ?? 0) / scale;
+
+		return {
+			edge: Math.max(0, Math.floor(headSeconds / target)),
+			first: Math.max(0, Math.floor(firstSeconds / target))
+		};
+	}
+
+	/** The manifest for a live stream, which cannot be indexed like a recording. */
+	async getLiveManifest(baseUrl: string, profile: CastProfile, maxHeight: number): Promise<string> {
+		this.lastUsed = Date.now();
+
+		const raw = this.info.streaming_data?.adaptive_formats ?? [];
+
+		const formats: LiveFormat[] = raw.map((format) => {
+			const mime = format.mime_type ?? '';
+			const codecs = mime.match(/codecs="([^"]+)"/)?.[1] ?? '';
+
+			return {
+				itag: format.itag,
+				key: FormatKeyUtils.fromFormat(buildSabrFormat(format)) ?? String(format.itag),
+				mimeType: mime.split(';')[0],
+				codecs,
+				bitrate: format.bitrate ?? 0,
+				width: format.width ?? undefined,
+				height: format.height ?? undefined,
+				fps: format.fps ?? undefined,
+				audioSampleRate: format.audio_sample_rate ?? undefined,
+				audioChannels: format.audio_channels ?? undefined,
+				language: format.language ?? undefined
+			};
+		});
+
+		const window = await this.getLiveWindow();
+
+		return buildLiveManifest({
+			baseUrl,
+			formats,
+			targetDurationSeconds: this.targetDurationSeconds,
+			edgeSegment: window.edge,
+			firstSegment: window.first,
+			profile,
+			maxHeight
+		});
+	}
+
+	/**
+	 * One live segment, addressed by number rather than by byte range.
+	 *
+	 * Segment numbers map straight onto presentation time, which is how the
+	 * server addresses live media in the first place.
+	 */
+	async getLiveSegment(key: string, number: number): Promise<Uint8Array> {
+		this.lastUsed = Date.now();
+
+		const format = this.formats.find((candidate) => FormatKeyUtils.fromFormat(candidate) === key);
+		if (!format) throw new Error(`Unknown format ${key}`);
+
+		const startTime = number * this.targetDurationSeconds;
+		this.adapter.playerTime = startTime;
+
+		const { data } = await this.sabrRequestWithHeader({
+			url: this.formatUrl(format),
+			headers: {},
+			startTime,
+			isInit: false,
+			allowEmpty: true
+		});
+
+		// Past the live edge the server answers with metadata and no media.
+		if (data.length === 0) {
+			throw new SegmentNotReadyError(`Segment ${number} is not available yet`);
+		}
+
+		return data;
+	}
+
+	/**
+	 * The container a format is delivered in.
+	 *
+	 * Unlike `getFormatMimeType` this reads the format itself rather than a
+	 * parsed index, because live formats never have one.
+	 */
+	mimeTypeForKey(key: string): string {
+		const format = this.formats.find((candidate) => FormatKeyUtils.fromFormat(candidate) === key);
+		return format?.mimeType?.split(';')[0] ?? 'video/mp4';
 	}
 
 	/** Total byte length a receiver should believe a format has. */

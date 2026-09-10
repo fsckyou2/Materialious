@@ -35,10 +35,6 @@ export async function POST(event) {
 		throw error(500, err instanceof Error ? err.message : 'Failed to open a cast session');
 	}
 
-	if (session.source === 'live') {
-		throw error(501, 'Casting live streams is not supported yet');
-	}
-
 	const baseUrl = castBaseUrl(event, session.id);
 
 	return json({
