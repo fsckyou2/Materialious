@@ -401,14 +401,32 @@ export async function getChannel(
 		// failing the whole page over.
 	}
 
-	const header = channel.header as { subscribers?: { toString(): string } } | undefined;
+	// The subscriber count sits in the header's second row of metadata parts,
+	// beside the channel's handle and its video count - the same shape a search
+	// result's lockup uses, and the same migration that moved everything else.
+	const rows =
+		(
+			channel.header as
+				| {
+						content?: {
+							metadata?: { metadata_rows?: { metadata_parts?: { text?: { text?: string } }[] }[] };
+						};
+				  }
+				| undefined
+		)?.content?.metadata?.metadata_rows ?? [];
+
+	const subscriberText =
+		rows
+			.flatMap((row) => row.metadata_parts ?? [])
+			.map((part) => part.text?.text ?? '')
+			.find((text) => /subscriber/i.test(text)) ?? '';
 
 	return {
 		channelId,
 		name: channel.metadata?.title ?? '',
 		thumbnail: bestThumbnail(channel.metadata?.avatar as { url: string; width?: number }[]),
 		description: channel.metadata?.description ?? '',
-		subscriberText: header?.subscribers?.toString() ?? '',
+		subscriberText,
 		videos,
 		continuation
 	};
