@@ -17,6 +17,15 @@ export type BrowseVideo = {
 	authorId: string;
 	lengthSeconds: number;
 	publishedText: string;
+	/**
+	 * Roughly how old the video is, in seconds.
+	 *
+	 * Feeds carry an age in words rather than a date, so this is read back out
+	 * of that text. It is approximate by construction - "2 weeks ago" covers a
+	 * week either side - but it is enough to put a merged feed in order, which
+	 * is the only thing asking for it.
+	 */
+	publishedSecondsAgo: number | null;
 	viewCountText: string;
 	thumbnail: string | null;
 	isLive: boolean;
@@ -43,6 +52,35 @@ function secondsFromLabel(label: string | undefined): number {
 	if (parts.some(Number.isNaN)) return 0;
 
 	return parts.reduce((total, part) => total * 60 + part, 0);
+}
+
+const AGE_UNITS: Record<string, number> = {
+	second: 1,
+	minute: 60,
+	hour: 3600,
+	day: 86_400,
+	week: 604_800,
+	month: 2_629_800,
+	year: 31_557_600
+};
+
+/**
+ * Turns YouTube's "3 days ago" into an age in seconds.
+ *
+ * Anything it cannot read - a scheduled premiere, a live badge, a language this
+ * instance does not run in - comes back null, and sorts to the end rather than
+ * pretending to be new.
+ */
+export function secondsSincePublished(text: string | undefined): number | null {
+	if (!text) return null;
+
+	const match = text.match(/(\d+)\s+(second|minute|hour|day|week|month|year)s?\s+ago/i);
+	if (!match) return null;
+
+	const unit = AGE_UNITS[match[2].toLowerCase()];
+	if (!unit) return null;
+
+	return Number(match[1]) * unit;
 }
 
 function bestThumbnail(thumbnails: { url: string; width?: number }[] | undefined): string | null {
@@ -84,6 +122,7 @@ export function toBrowseVideo(item: Helpers.YTNode): BrowseVideo | null {
 			authorId: video.author?.id ?? '',
 			lengthSeconds: secondsFromLabel(video.length_text?.text),
 			publishedText: video.published?.toString() ?? '',
+			publishedSecondsAgo: secondsSincePublished(video.published?.toString()),
 			viewCountText: video.view_count?.toString() ?? '',
 			thumbnail: bestThumbnail(video.thumbnails),
 			isLive: video.is_live === true
@@ -123,6 +162,7 @@ export function toBrowseVideo(item: Helpers.YTNode): BrowseVideo | null {
 			authorId,
 			lengthSeconds,
 			publishedText: statsRow?.metadata_parts?.[1]?.text?.text ?? '',
+			publishedSecondsAgo: secondsSincePublished(statsRow?.metadata_parts?.[1]?.text?.text),
 			viewCountText: statsRow?.metadata_parts?.[0]?.text?.text ?? '',
 			thumbnail: bestThumbnail(
 				item.content_image?.is(YTNodes.ThumbnailView) ? item.content_image.image : undefined
@@ -275,6 +315,116 @@ export async function getVideo(videoId: string, cacheDir?: string): Promise<Vide
 		isLive: info.basic_info.is_live === true,
 		related
 	};
+}
+
+export type BrowseComment = {
+	commentId: string;
+	author: string;
+	authorThumbnail: string | null;
+	content: string;
+	publishedText: string;
+	likeText: string;
+	replyCount: number;
+	isPinned: boolean;
+	isOwner: boolean;
+};
+
+/**
+ * The top comments on a video.
+ *
+ * Replies are counted but not fetched: a television shows a column of comments
+ * to read, not a thread to navigate, and each expansion is another round trip.
+ */
+export async function getComments(videoId: string, cacheDir?: string): Promise<BrowseComment[]> {
+	const innertube = await getBrowseSession(cacheDir);
+	const comments = await innertube.getComments(videoId, 'TOP_COMMENTS');
+
+	const flattened: BrowseComment[] = [];
+
+	for (const thread of comments.contents ?? []) {
+		const comment = thread.comment;
+		if (!comment) continue;
+
+		flattened.push({
+			commentId: comment.comment_id,
+			author: comment.author?.name ?? '',
+			authorThumbnail: bestThumbnail(comment.author?.thumbnails),
+			content: comment.content?.toString() ?? '',
+			publishedText: comment.published_time ?? '',
+			likeText: comment.like_count ?? '',
+			replyCount: Number(comment.reply_count ?? 0) || 0,
+			isPinned: comment.is_pinned === true,
+			isOwner: comment.author_is_channel_owner === true
+		});
+	}
+
+	return flattened;
+}
+
+/** How long a channel's latest videos are reused before being fetched again. */
+const FEED_CACHE_MS = 10 * 60 * 1000;
+
+/** How many of a channel's videos a merged feed will take. */
+const FEED_PER_CHANNEL = 8;
+
+/** How many channels are fetched at once. */
+const FEED_CONCURRENCY = 4;
+
+const feedCache = new Map<string, { videos: BrowseVideo[]; at: number }>();
+
+async function latestFromChannel(channelId: string, cacheDir?: string): Promise<BrowseVideo[]> {
+	const cached = feedCache.get(channelId);
+	if (cached && Date.now() - cached.at < FEED_CACHE_MS) return cached.videos;
+
+	try {
+		const channel = await getChannel(channelId, cacheDir);
+		const videos = channel.videos.slice(0, FEED_PER_CHANNEL);
+
+		feedCache.set(channelId, { videos, at: Date.now() });
+
+		return videos;
+	} catch {
+		// One unreachable channel should not empty the whole feed. A stale copy
+		// is better than a hole in it.
+		return cached?.videos ?? [];
+	}
+}
+
+/**
+ * The newest videos across a set of channels, merged into one list.
+ *
+ * Subscriptions are encrypted, so the instance cannot know whose feed this is:
+ * the client says which channels it wants. Fetching them here rather than on
+ * the client turns a dozen sequential round trips over a television's network
+ * into one, and lets the results be cached for everyone asking.
+ */
+export async function getFeed(
+	channelIds: string[],
+	limit = 60,
+	cacheDir?: string
+): Promise<BrowseVideo[]> {
+	const queue = [...channelIds];
+	const collected: BrowseVideo[] = [];
+
+	const workers = Array.from({ length: Math.min(FEED_CONCURRENCY, queue.length) }, async () => {
+		for (;;) {
+			const channelId = queue.shift();
+			if (!channelId) return;
+
+			collected.push(...(await latestFromChannel(channelId, cacheDir)));
+		}
+	});
+
+	await Promise.all(workers);
+
+	// Live first - it is happening now - then newest to oldest, with anything
+	// whose age could not be read left at the end rather than jumbled through.
+	return collected
+		.sort((a, b) => {
+			if (a.isLive !== b.isLive) return a.isLive ? -1 : 1;
+			return (a.publishedSecondsAgo ?? Infinity) - (b.publishedSecondsAgo ?? Infinity);
+		})
+		.slice(0, limit);
 }
 
 export { getBrowseSession };
