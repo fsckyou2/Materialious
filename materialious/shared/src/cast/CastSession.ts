@@ -27,6 +27,9 @@ export type CastProfile = 'legacy' | 'modern';
 
 export type CastMediaSource = 'vod' | 'live';
 
+/** One entry of the player response's adaptive formats. */
+type RawFormat = NonNullable<YT.VideoInfo['streaming_data']>['adaptive_formats'][number];
+
 type FormatState = {
 	format: SabrFormat;
 	/** The moov + sidx blob, served verbatim for ranges that land in it. */
@@ -182,6 +185,9 @@ export class CastSession {
 	private readonly pendingSegments = new Map<string, Promise<Uint8Array>>();
 	private liveEdge?: { metadata: LiveMetadata | undefined; at: number };
 
+	/** Player response entries, by format key. */
+	private rawFormats = new Map<string, RawFormat>();
+
 	private constructor(
 		public readonly id: string,
 		public readonly videoId: string,
@@ -228,7 +234,17 @@ export class CastSession {
 			throw new Error('Video has no streaming data');
 		}
 
-		this.formats = (streamingData.adaptive_formats ?? []).map(buildSabrFormat);
+		const adaptive = streamingData.adaptive_formats ?? [];
+
+		this.formats = adaptive.map(buildSabrFormat);
+
+		// Keyed the same way the gateway addresses formats everywhere else, so
+		// the two views of one track cannot drift apart.
+		this.rawFormats = new Map();
+		this.formats.forEach((format, index) => {
+			const key = FormatKeyUtils.fromFormat(format);
+			if (key) this.rawFormats.set(key, adaptive[index]);
+		});
 
 		this.sabr = new SabrStreamingAdapter({
 			playerAdapter: this.adapter,
@@ -428,10 +444,21 @@ export class CastSession {
 		return `sabr://${format.width ? 'video' : 'audio'}?key=${FormatKeyUtils.fromFormat(format)}`;
 	}
 
-	private rawFormat(itag: number) {
-		return (this.info.streaming_data?.adaptive_formats ?? []).find(
-			(format) => format.itag === itag
-		);
+	/**
+	 * The player response entry a SABR format came from.
+	 *
+	 * Matched on the format key rather than the itag, because a video with
+	 * dubbed audio ships the same itag once per language - twenty three times,
+	 * on a video this was found on - and they differ in exactly the fields this
+	 * is asked for: how long the format is, and where its index sits. Matching
+	 * on itag alone hands every track the first one's numbers, and the gateway
+	 * then promises bytes it cannot produce.
+	 */
+	private rawFormat(format: SabrFormat) {
+		const key = FormatKeyUtils.fromFormat(format);
+		if (!key) return undefined;
+
+		return this.rawFormats.get(key);
 	}
 
 	/** Fetches (once) the init blob and segment index for a format. */
@@ -446,7 +473,7 @@ export class CastSession {
 			const format = this.formats.find((candidate) => FormatKeyUtils.fromFormat(candidate) === key);
 			if (!format) throw new Error(`Unknown format ${key}`);
 
-			const raw = this.rawFormat(format.itag);
+			const raw = this.rawFormat(format);
 			const indexStart = raw?.index_range?.start ?? 0;
 			const indexEnd = raw?.index_range?.end;
 
