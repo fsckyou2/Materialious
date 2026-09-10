@@ -1,4 +1,5 @@
 import { YTNodes, type Helpers } from 'youtubei.js';
+import { randomUUID } from 'node:crypto';
 import { getBrowseSession } from './session.js';
 
 /**
@@ -43,6 +44,8 @@ export type BrowseChannel = {
 export type BrowseResults = {
 	videos: BrowseVideo[];
 	channels: BrowseChannel[];
+	/** Brings back the next page of results, when there is one. */
+	continuation: string | null;
 };
 
 function secondsFromLabel(label: string | undefined): number {
@@ -207,6 +210,69 @@ function toBrowseChannel(item: Helpers.YTNode): BrowseChannel | null {
 }
 
 /**
+ * Feeds that still have more to give.
+ *
+ * YouTube pages its results with an opaque continuation, and the library only
+ * offers it through the feed object it came from - there is no token to hand a
+ * client and take back later. So the feed stays here, under a token of our own,
+ * and a client asking for more brings the token back.
+ */
+const pages = new Map<string, { feed: FeedLike; at: number }>();
+
+/** How long an unused page is kept before it is forgotten. */
+const PAGE_TTL_MS = 15 * 60 * 1000;
+
+type FeedLike = {
+	videos: Helpers.YTNode[];
+	has_continuation: boolean;
+	getContinuation(): Promise<FeedLike>;
+};
+
+function forgetStalePages(): void {
+	const now = Date.now();
+	for (const [token, page] of pages) {
+		if (now - page.at > PAGE_TTL_MS) pages.delete(token);
+	}
+}
+
+/** Files a feed away and returns the token that brings back its next page. */
+function keepPage(feed: FeedLike | undefined): string | null {
+	if (!feed?.has_continuation) return null;
+
+	forgetStalePages();
+
+	const token = randomUUID();
+	pages.set(token, { feed, at: Date.now() });
+
+	return token;
+}
+
+/**
+ * The next page of whatever produced this token.
+ *
+ * An expired or unknown token is not an error: the client simply stops asking,
+ * which is the same thing that happens at the end of a feed.
+ */
+export async function continuePage(token: string): Promise<{
+	videos: BrowseVideo[];
+	continuation: string | null;
+}> {
+	const page = pages.get(token);
+	if (!page) return { videos: [], continuation: null };
+
+	pages.delete(token);
+
+	const next = await page.feed.getContinuation();
+
+	return {
+		videos: (next.videos ?? [])
+			.map(toBrowseVideo)
+			.filter((video): video is BrowseVideo => video !== null),
+		continuation: keepPage(next)
+	};
+}
+
+/**
  * Searches for videos, or for channels.
  *
  * Channels do not appear in an unfiltered search's results at all - they sit
@@ -238,7 +304,7 @@ export async function search(
 		if (channel) channels.push(channel);
 	}
 
-	return { videos, channels };
+	return { videos, channels, continuation: keepPage(results as unknown as FeedLike) };
 }
 
 export type ChannelPage = {
@@ -247,6 +313,7 @@ export type ChannelPage = {
 	thumbnail: string | null;
 	description: string;
 	videos: BrowseVideo[];
+	continuation: string | null;
 };
 
 export async function getChannel(channelId: string, cacheDir?: string): Promise<ChannelPage> {
@@ -254,8 +321,11 @@ export async function getChannel(channelId: string, cacheDir?: string): Promise<
 	const channel = await innertube.getChannel(channelId);
 
 	let videos: BrowseVideo[] = [];
+	let continuation: string | null = null;
+
 	try {
 		const tab = await channel.getVideos();
+		continuation = keepPage(tab as unknown as FeedLike);
 		videos = (tab.videos ?? [])
 			.map(toBrowseVideo)
 			.filter((video): video is BrowseVideo => video !== null)
@@ -276,7 +346,8 @@ export async function getChannel(channelId: string, cacheDir?: string): Promise<
 		name: channel.metadata?.title ?? '',
 		thumbnail: bestThumbnail(channel.metadata?.avatar as { url: string; width?: number }[]),
 		description: channel.metadata?.description ?? '',
-		videos
+		videos,
+		continuation
 	};
 }
 
@@ -361,34 +432,69 @@ export async function getComments(videoId: string, cacheDir?: string): Promise<B
 	return flattened;
 }
 
-/** How long a channel's latest videos are reused before being fetched again. */
+/** How long a channel's videos are reused before being fetched again. */
 const FEED_CACHE_MS = 10 * 60 * 1000;
-
-/** How many of a channel's videos a merged feed will take. */
-const FEED_PER_CHANNEL = 8;
 
 /** How many channels are fetched at once. */
 const FEED_CONCURRENCY = 4;
 
-const feedCache = new Map<string, { videos: BrowseVideo[]; at: number }>();
+/** How many rounds deeper one request will go looking for older videos. */
+const FEED_MAX_DEEPENING = 3;
 
-async function latestFromChannel(channelId: string, cacheDir?: string): Promise<BrowseVideo[]> {
+type ChannelFeed = {
+	videos: BrowseVideo[];
+	/** Token for this channel's next page, or null once it is exhausted. */
+	next: string | null;
+	at: number;
+};
+
+const feedCache = new Map<string, ChannelFeed>();
+
+async function loadChannel(channelId: string, cacheDir?: string): Promise<ChannelFeed> {
 	const cached = feedCache.get(channelId);
-	if (cached && Date.now() - cached.at < FEED_CACHE_MS) return cached.videos;
+	if (cached && Date.now() - cached.at < FEED_CACHE_MS) return cached;
 
 	try {
 		const channel = await getChannel(channelId, cacheDir);
-		const videos = channel.videos.slice(0, FEED_PER_CHANNEL);
+		const loaded: ChannelFeed = {
+			videos: channel.videos,
+			next: channel.continuation,
+			at: Date.now()
+		};
 
-		feedCache.set(channelId, { videos, at: Date.now() });
+		feedCache.set(channelId, loaded);
 
-		return videos;
+		return loaded;
 	} catch {
 		// One unreachable channel should not empty the whole feed. A stale copy
 		// is better than a hole in it.
-		return cached?.videos ?? [];
+		return cached ?? { videos: [], next: null, at: Date.now() };
 	}
 }
+
+/** Pulls one more page into a channel's list, if it has one. */
+async function deepenChannel(channel: ChannelFeed): Promise<boolean> {
+	if (!channel.next) return false;
+
+	const page = await continuePage(channel.next);
+
+	channel.videos = [...channel.videos, ...page.videos];
+	channel.next = page.continuation;
+
+	return page.videos.length > 0;
+}
+
+/** Live first - it is happening now - then newest to oldest. */
+function byRecency(a: BrowseVideo, b: BrowseVideo): number {
+	if (a.isLive !== b.isLive) return a.isLive ? -1 : 1;
+	return (a.publishedSecondsAgo ?? Infinity) - (b.publishedSecondsAgo ?? Infinity);
+}
+
+export type FeedPage = {
+	videos: BrowseVideo[];
+	/** Whether asking for the next offset could return anything. */
+	hasMore: boolean;
+};
 
 /**
  * The newest videos across a set of channels, merged into one list.
@@ -397,34 +503,51 @@ async function latestFromChannel(channelId: string, cacheDir?: string): Promise<
  * the client says which channels it wants. Fetching them here rather than on
  * the client turns a dozen sequential round trips over a television's network
  * into one, and lets the results be cached for everyone asking.
+ *
+ * Scrolling past the end of what has been gathered goes back a page in every
+ * channel at once, because a merged feed cannot know which channel the next
+ * oldest video belongs to until it has looked.
  */
 export async function getFeed(
 	channelIds: string[],
-	limit = 60,
-	cacheDir?: string
-): Promise<BrowseVideo[]> {
+	options: { offset?: number; limit?: number; cacheDir?: string } = {}
+): Promise<FeedPage> {
+	const offset = Math.max(0, options.offset ?? 0);
+	const limit = Math.max(1, options.limit ?? 60);
+
 	const queue = [...channelIds];
-	const collected: BrowseVideo[] = [];
+	const channels: ChannelFeed[] = [];
 
 	const workers = Array.from({ length: Math.min(FEED_CONCURRENCY, queue.length) }, async () => {
 		for (;;) {
 			const channelId = queue.shift();
 			if (!channelId) return;
 
-			collected.push(...(await latestFromChannel(channelId, cacheDir)));
+			channels.push(await loadChannel(channelId, options.cacheDir));
 		}
 	});
 
 	await Promise.all(workers);
 
-	// Live first - it is happening now - then newest to oldest, with anything
-	// whose age could not be read left at the end rather than jumbled through.
-	return collected
-		.sort((a, b) => {
-			if (a.isLive !== b.isLive) return a.isLive ? -1 : 1;
-			return (a.publishedSecondsAgo ?? Infinity) - (b.publishedSecondsAgo ?? Infinity);
-		})
-		.slice(0, limit);
+	const merged = () => channels.flatMap((channel) => channel.videos).sort(byRecency);
+
+	let videos = merged();
+
+	// Only go looking for older videos when somebody has scrolled far enough to
+	// need them.
+	for (let round = 0; round < FEED_MAX_DEEPENING; round += 1) {
+		if (videos.length >= offset + limit) break;
+		if (!channels.some((channel) => channel.next)) break;
+
+		await Promise.all(channels.map((channel) => deepenChannel(channel)));
+
+		videos = merged();
+	}
+
+	return {
+		videos: videos.slice(offset, offset + limit),
+		hasMore: videos.length > offset + limit || channels.some((channel) => channel.next)
+	};
 }
 
 export { getBrowseSession };
