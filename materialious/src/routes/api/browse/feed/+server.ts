@@ -34,11 +34,20 @@ export async function POST({ request, locals }) {
 		.slice(0, MAX_CHANNELS);
 
 	if (requested.length === 0) {
-		return json({ videos: [] });
+		return json({ videos: [], hasMore: false });
 	}
 
+	const body_ = body as { offset?: unknown; limit?: unknown };
+	const offset = Number(body_.offset ?? 0);
+	const limit = Number(body_.limit ?? 60);
+
 	try {
-		return json({ videos: await getFeed(requested) });
+		return json(
+			await getFeed(requested, {
+				offset: Number.isFinite(offset) ? offset : 0,
+				limit: Number.isFinite(limit) ? Math.min(limit, 120) : 60
+			})
+		);
 	} catch (err) {
 		throw error(502, err instanceof Error ? err.message : 'Could not load the feed');
 	}
