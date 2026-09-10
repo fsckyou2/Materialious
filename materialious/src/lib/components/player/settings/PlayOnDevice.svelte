@@ -15,9 +15,8 @@
 	let sending = $state(false);
 	let button: HTMLButtonElement | undefined = $state();
 
-	// Only instances with a backend can hold the paired televisions, and live
-	// streams have no segment index for the gateway to serve yet.
-	const supported = $derived(!!isOwnBackend() && !video.liveNow);
+	// Only instances with a backend can hold the paired televisions.
+	const supported = $derived(!!isOwnBackend());
 
 	async function refresh() {
 		if (!supported) return;

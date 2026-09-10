@@ -27,6 +27,8 @@ export type CastStatus = {
 	poster: string | null;
 	/** Set when a cast attempt failed, for surfacing to the viewer. */
 	errorMessage: string | null;
+	/** A live stream has no end to seek towards. */
+	live: boolean;
 };
 
 /** Height caps offered while casting. 0 means "let the receiver decide". */
@@ -43,7 +45,8 @@ export const castStatus: Writable<CastStatus> = writable({
 	paused: false,
 	maxHeight: 1080,
 	poster: null,
-	errorMessage: null
+	errorMessage: null,
+	live: false
 });
 
 let remotePlayer: any;
@@ -153,7 +156,8 @@ function initialise(): void {
 				videoId: null,
 				title: null,
 				currentTime: 0,
-				duration: 0
+				duration: 0,
+				live: false
 			}));
 		}
 	});
@@ -213,6 +217,7 @@ export async function castVideo(options: {
 	}
 
 	const castSession: CastSessionResponse = await response.json();
+	const live = castSession.source === 'live';
 
 	const load = async (captions: boolean) => {
 		const manifestUrl = new URL(castSession.manifestUrl);
@@ -224,8 +229,14 @@ export async function castVideo(options: {
 			manifestUrl.toString(),
 			'application/dash+xml'
 		);
-		mediaInfo.streamType = chromeCast().media.StreamType.BUFFERED;
-		mediaInfo.duration = castSession.duration;
+		// A live stream is handed over as one: the receiver then treats the
+		// manifest as a moving window rather than a file with an end, and shows
+		// the viewer that they are watching live.
+		mediaInfo.streamType = live
+			? chromeCast().media.StreamType.LIVE
+			: chromeCast().media.StreamType.BUFFERED;
+
+		if (!live) mediaInfo.duration = castSession.duration;
 
 		const metadata = new (chromeCast().media.GenericMediaMetadata)();
 		metadata.title = castSession.title;
@@ -237,7 +248,9 @@ export async function castVideo(options: {
 
 		const request = new (chromeCast().media.LoadRequest)(mediaInfo);
 		request.autoplay = true;
-		request.currentTime = Math.max(0, Math.floor(options.startTime ?? 0));
+
+		// Live starts where the stream is, not where the viewer was.
+		if (!live) request.currentTime = Math.max(0, Math.floor(options.startTime ?? 0));
 
 		await session.loadMedia(request);
 	};
@@ -258,7 +271,8 @@ export async function castVideo(options: {
 		videoId: options.videoId,
 		title: castSession.title,
 		deviceName: session.getCastDevice()?.friendlyName ?? null,
-		duration: castSession.duration,
+		duration: live ? 0 : castSession.duration,
+		live,
 		maxHeight: options.maxHeight ?? status.maxHeight,
 		poster: options.poster ?? status.poster
 	}));

@@ -1,4 +1,4 @@
-export { CastSession } from './CastSession.js';
+export { CastSession, SegmentNotReadyError } from './CastSession.js';
 export type { CastProfile, CastMediaSource } from './CastSession.js';
 export { createCastSession, getCastSession, endCastSession } from './sessionStore.js';
 export { parseSegmentIndex } from './sidx.js';

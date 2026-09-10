@@ -50,10 +50,6 @@ export async function POST(event) {
 		throw error(500, err instanceof Error ? err.message : 'Failed to open a playback session');
 	}
 
-	if (session.source === 'live') {
-		throw error(501, 'Playing live streams on a device is not supported yet');
-	}
-
 	const manifestUrl = new URL(`${castBaseUrl(event, session.id)}/manifest`);
 	manifestUrl.searchParams.set('profile', data.data.profile);
 	manifestUrl.searchParams.set('maxHeight', String(data.data.maxHeight));
