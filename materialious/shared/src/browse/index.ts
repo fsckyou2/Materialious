@@ -93,6 +93,19 @@ export function secondsSincePublished(text: string | undefined): number | null {
 	return Number(match[1]) * unit;
 }
 
+/**
+ * A short's thumbnail, worked out from its id.
+ *
+ * YouTube moved the image on these lockups into a field the parsing library
+ * does not read yet, so every short arrives without one. The image is still
+ * where it always was, under the video's own id, and `oardefault` is the frame
+ * in the shape the short was filmed in rather than letterboxed into a
+ * widescreen box.
+ */
+function shortsThumbnail(videoId: string): string {
+	return `https://i.ytimg.com/vi/${videoId}/oardefault.jpg`;
+}
+
 function bestThumbnail(thumbnails: { url: string; width?: number }[] | undefined): string | null {
 	if (!thumbnails?.length) return null;
 
@@ -204,7 +217,7 @@ export function toBrowseVideo(item: Helpers.YTNode): BrowseVideo | null {
 			publishedText: '',
 			publishedSecondsAgo: null,
 			viewCountText: item.overlay_metadata?.secondary_text?.toString() ?? '',
-			thumbnail: bestThumbnail(item.thumbnail),
+			thumbnail: bestThumbnail(item.thumbnail) ?? shortsThumbnail(videoId),
 			isLive: false,
 			kind: 'short'
 		};
