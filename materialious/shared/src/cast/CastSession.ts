@@ -11,6 +11,7 @@ import type { CacheManager, RequestMetadataManager } from 'googlevideo/utils';
 import type { SabrFormat } from 'googlevideo/shared-types';
 import { getDownloadSession } from '../download/session.js';
 import { parseSegmentIndex, type SegmentIndexEntry } from './sidx.js';
+import { parseWebmIndex } from './webm.js';
 
 /**
  * Codec profiles a receiver can be asked to play.
@@ -386,7 +387,16 @@ export class CastSession {
 				isInit: true
 			});
 
-			const segments = parseSegmentIndex(init, indexStart, indexEnd + 1);
+			// The two containers YouTube serves index themselves differently: MP4
+			// carries a sidx box, WebM keeps a Cues element with cluster
+			// positions instead.
+			const isWebm = format.mimeType?.includes('webm') ?? false;
+			const declaredLength = Number(raw?.content_length ?? 0);
+
+			const segments = isWebm
+				? parseWebmIndex(init, declaredLength)
+				: parseSegmentIndex(init, indexStart, indexEnd + 1);
+
 			if (!segments?.length) {
 				throw new Error(`Could not read a segment index for format ${key}`);
 			}
@@ -395,7 +405,7 @@ export class CastSession {
 				format,
 				init,
 				segments,
-				totalSize: Number(raw?.content_length ?? segments[segments.length - 1].end + 1)
+				totalSize: declaredLength || segments[segments.length - 1].end + 1
 			};
 
 			this.formatStates.set(key, state);

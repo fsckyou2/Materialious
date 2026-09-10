@@ -58,6 +58,7 @@
 	import CaptionSettings from './settings/CaptionSettings.svelte';
 	import Airplay from './settings/Airplay.svelte';
 	import Cast from './settings/Cast.svelte';
+	import PlayOnDevice from './settings/PlayOnDevice.svelte';
 	import CastOverlay from './CastOverlay.svelte';
 	import { castStatus, castVideo } from '$lib/player/cast/sender';
 	import Pip from './settings/Pip.svelte';
@@ -968,6 +969,7 @@
 					{#if playerElement}
 						<Settings {player} {playerElement} />
 						<Cast video={data.video} {playerElement} />
+						<PlayOnDevice video={data.video} {playerElement} />
 						<Airplay {playerElement} />
 						<Pip {playerElement} />
 					{/if}

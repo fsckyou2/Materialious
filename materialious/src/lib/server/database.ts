@@ -6,6 +6,7 @@ let ChannelSubscriptionTable: ModelCtor<Model<any, any>>;
 let CaptchaTable: ModelCtor<Model<any, any>>;
 let UserKeyValueTable: ModelCtor<Model<any, any>>;
 let UserHistoryTable: ModelCtor<Model<any, any>>;
+let DeviceTable: ModelCtor<Model<any, any>>;
 
 let sequelizeInstance: Sequelize | null = null;
 
@@ -17,6 +18,7 @@ export function getSequelize(): {
 	CaptchaTable: ModelCtor<Model<any, any>>;
 	UserKeyValueTable: ModelCtor<Model<any, any>>;
 	UserHistoryTable: ModelCtor<Model<any, any>>;
+	DeviceTable: ModelCtor<Model<any, any>>;
 } {
 	if (sequelizeInstance) {
 		return {
@@ -25,7 +27,8 @@ export function getSequelize(): {
 			ChannelSubscriptionTable,
 			CaptchaTable,
 			UserKeyValueTable,
-			UserHistoryTable
+			UserHistoryTable,
+			DeviceTable
 		};
 	}
 
@@ -202,9 +205,50 @@ export function getSequelize(): {
 		}
 	});
 
+	// Televisions paired to an account. The name is stored in the clear, unlike
+	// subscriptions and history: it is chosen by the viewer for a device in
+	// their own home, and the browser has to show it in a picker without
+	// holding the master key.
+	DeviceTable = sequelizeInstance.define('Devices', {
+		id: {
+			type: DataTypes.STRING,
+			allowNull: false,
+			primaryKey: true
+		},
+		name: {
+			type: DataTypes.STRING,
+			allowNull: false
+		},
+		// Only a hash is kept, so a database read does not yield working tokens.
+		tokenHash: {
+			type: DataTypes.STRING,
+			allowNull: false
+		},
+		created: {
+			type: DataTypes.DATE,
+			allowNull: false
+		},
+		lastSeen: {
+			type: DataTypes.DATE,
+			allowNull: true
+		},
+		// The device's own public key, which the browser seals the master key to.
+		publicKey: {
+			type: DataTypes.STRING,
+			allowNull: true
+		},
+		// That sealed key, which only the device can open. The server stores it
+		// but can never read it.
+		masterKeyCipher: {
+			type: DataTypes.STRING(1024),
+			allowNull: true
+		}
+	});
+
 	UserTable.hasMany(ChannelSubscriptionTable);
 	UserTable.hasMany(UserKeyValueTable);
 	UserTable.hasMany(UserHistoryTable);
+	UserTable.hasMany(DeviceTable);
 
 	return {
 		sequelize: sequelizeInstance,
@@ -212,7 +256,8 @@ export function getSequelize(): {
 		ChannelSubscriptionTable,
 		CaptchaTable,
 		UserKeyValueTable,
-		UserHistoryTable
+		UserHistoryTable,
+		DeviceTable
 	};
 }
 
@@ -241,4 +286,49 @@ export interface UserKeyStoreModel {
 	key: string;
 	valueCipher: string;
 	valueNonce: string;
+}
+
+export interface DeviceModel extends Model {
+	id: string;
+	name: string;
+	tokenHash: string;
+	created: Date;
+	lastSeen: Date | null;
+	publicKey: string | null;
+	masterKeyCipher: string | null;
+	UserId: string;
+}
+
+/**
+ * Adds columns to tables that already exist.
+ *
+ * `sync()` creates missing tables but leaves existing ones alone, so a
+ * television paired before these columns existed would keep a table without
+ * them and every write would fail.
+ */
+export async function migrateDevices(): Promise<void> {
+	const { sequelize, DeviceTable } = getSequelize();
+	const queryInterface = sequelize.getQueryInterface();
+
+	let existing: Record<string, unknown>;
+	try {
+		existing = await queryInterface.describeTable(DeviceTable.getTableName() as string);
+	} catch {
+		// The table has not been created yet; sync() will build it complete.
+		return;
+	}
+
+	if (!('publicKey' in existing)) {
+		await queryInterface.addColumn(DeviceTable.getTableName() as string, 'publicKey', {
+			type: DataTypes.STRING,
+			allowNull: true
+		});
+	}
+
+	if (!('masterKeyCipher' in existing)) {
+		await queryInterface.addColumn(DeviceTable.getTableName() as string, 'masterKeyCipher', {
+			type: DataTypes.STRING(1024),
+			allowNull: true
+		});
+	}
 }

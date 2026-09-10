@@ -21,7 +21,7 @@
 	// Casting is served by this instance's own gateway, so it only exists on
 	// deployments that have a backend to serve it. Live streams have no segment
 	// index to seek around, so the gateway cannot serve them yet.
-	const supported = !!isOwnBackend() && isCastSupported() && !video.liveNow;
+	const supported = $derived(!!isOwnBackend() && isCastSupported() && !video.liveNow);
 
 	onMount(() => {
 		if (supported) loadCastSdk();

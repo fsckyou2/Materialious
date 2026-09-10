@@ -1,5 +1,6 @@
 import { isOwnBackend } from '$lib/shared';
-import { getSequelize } from '$lib/server/database';
+import { getSequelize, migrateDevices } from '$lib/server/database';
+import { authenticateDeviceByToken } from '$lib/server/devices';
 import { unsign } from 'cookie-signature';
 import { env } from '$env/dynamic/private';
 import { RateLimiter } from 'sveltekit-rate-limiter/server';
@@ -32,6 +33,7 @@ export async function handle({ event, resolve }) {
 	if (!sequelizeAuthenticated) {
 		await sequelize.sequelize.sync();
 		await sequelize.sequelize.authenticate();
+		await migrateDevices();
 		sequelizeAuthenticated = true;
 	}
 
@@ -48,6 +50,18 @@ export async function handle({ event, resolve }) {
 		const userId = unsign(signedUserId, env.COOKIE_SECRET);
 		if (userId) {
 			event.locals.userId = userId;
+		}
+	}
+
+	// A paired television acts for its owner. It carries a bearer token rather
+	// than a session cookie, because it has no browser and no login of its own.
+	if (!event.locals.userId) {
+		const bearer = event.request.headers.get('authorization')?.replace(/^Bearer\s+/i, '');
+		if (bearer) {
+			const device = await authenticateDeviceByToken(bearer);
+			if (device) {
+				event.locals.userId = device.UserId;
+			}
 		}
 	}
 

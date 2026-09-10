@@ -11,6 +11,18 @@ ENV PUBLIC_BUILD_WITH_BACKEND="true"
 RUN npm run build
 RUN npm prune --omit=dev
 
+# Packages the server never loads. capacitor-nodejs alone is nearly 200MB of
+# Android runtime, and the build tooling that survives the prune is only there
+# because production packages happen to depend on it. Dropping them here keeps
+# every deploy's upload a good deal smaller.
+RUN rm -rf \
+	node_modules/capacitor-nodejs \
+	node_modules/@trapezedev \
+	node_modules/@rolldown \
+	node_modules/typescript \
+	node_modules/lightningcss-linux-x64-gnu \
+	node_modules/lightningcss-linux-x64-musl
+
 FROM node:24-alpine
 
 WORKDIR /app
