@@ -1,8 +1,14 @@
 import { getFeed } from '@materialious/shared/browse';
 import { error, json } from '@sveltejs/kit';
 
-/** How many channels one request may ask about. */
-const MAX_CHANNELS = 40;
+/**
+ * How many channels one request may ask about.
+ *
+ * High enough to hold every subscription an account is likely to have: a feed
+ * that quietly drops the rest is worse than a slow one, because the videos it
+ * leaves out are invisible rather than late.
+ */
+const MAX_CHANNELS = 400;
 
 /**
  * The newest videos across a set of channels.
@@ -37,13 +43,15 @@ export async function POST({ request, locals }) {
 		return json({ videos: [], hasMore: false });
 	}
 
-	const body_ = body as { offset?: unknown; limit?: unknown };
+	const body_ = body as { offset?: unknown; limit?: unknown; kind?: unknown };
 	const offset = Number(body_.offset ?? 0);
 	const limit = Number(body_.limit ?? 60);
+	const kind = body_.kind === 'shorts' || body_.kind === 'live' ? body_.kind : 'videos';
 
 	try {
 		return json(
 			await getFeed(requested, {
+				kind,
 				offset: Number.isFinite(offset) ? offset : 0,
 				limit: Number.isFinite(limit) ? Math.min(limit, 120) : 60
 			})
