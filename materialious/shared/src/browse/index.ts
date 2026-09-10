@@ -30,7 +30,14 @@ export type BrowseVideo = {
 	viewCountText: string;
 	thumbnail: string | null;
 	isLive: boolean;
+	/** What kind of thing this is, since a feed can hold all three. */
+	kind: VideoKind;
 };
+
+export type VideoKind = 'video' | 'short' | 'live';
+
+/** The channel tabs a feed can be built from. */
+export type FeedKind = 'videos' | 'shorts' | 'live';
 
 export type BrowseChannel = {
 	channelId: string;
@@ -128,7 +135,8 @@ export function toBrowseVideo(item: Helpers.YTNode): BrowseVideo | null {
 			publishedSecondsAgo: secondsSincePublished(video.published?.toString()),
 			viewCountText: video.view_count?.toString() ?? '',
 			thumbnail: bestThumbnail(video.thumbnails),
-			isLive: video.is_live === true
+			isLive: video.is_live === true,
+			kind: video.is_live === true ? 'live' : 'video'
 		};
 	}
 
@@ -158,6 +166,9 @@ export function toBrowseVideo(item: Helpers.YTNode): BrowseVideo | null {
 			metadata?.image?.renderer_context?.command_context?.on_tap?.payload?.browseId ?? '';
 		const statsRow = authorId ? rows[1] : rows[0];
 
+		// A live lockup says so on its thumbnail rather than in a field.
+		const live = JSON.stringify(item.content_image ?? {}).includes('LIVE');
+
 		return {
 			videoId: item.content_id,
 			title: metadata?.title?.toString() ?? '',
@@ -170,7 +181,32 @@ export function toBrowseVideo(item: Helpers.YTNode): BrowseVideo | null {
 			thumbnail: bestThumbnail(
 				item.content_image?.is(YTNodes.ThumbnailView) ? item.content_image.image : undefined
 			),
-			isLive: false
+			isLive: live,
+			kind: live ? 'live' : 'video'
+		};
+	}
+
+	// Shorts come as their own lockup, which carries almost nothing: no
+	// duration, no date, and its two lines of text rather than named fields.
+	if (item.is(YTNodes.ShortsLockupView)) {
+		const videoId =
+			(item.on_tap_endpoint?.payload as { videoId?: string } | undefined)?.videoId ??
+			item.entity_id;
+
+		if (!videoId) return null;
+
+		return {
+			videoId,
+			title: item.overlay_metadata?.primary_text?.toString() ?? '',
+			author: '',
+			authorId: '',
+			lengthSeconds: 0,
+			publishedText: '',
+			publishedSecondsAgo: null,
+			viewCountText: item.overlay_metadata?.secondary_text?.toString() ?? '',
+			thumbnail: bestThumbnail(item.thumbnail),
+			isLive: false,
+			kind: 'short'
 		};
 	}
 
@@ -316,7 +352,11 @@ export type ChannelPage = {
 	continuation: string | null;
 };
 
-export async function getChannel(channelId: string, cacheDir?: string): Promise<ChannelPage> {
+export async function getChannel(
+	channelId: string,
+	cacheDir?: string,
+	kind: FeedKind = 'videos'
+): Promise<ChannelPage> {
 	const innertube = await getBrowseSession(cacheDir);
 	const channel = await innertube.getChannel(channelId);
 
@@ -324,7 +364,12 @@ export async function getChannel(channelId: string, cacheDir?: string): Promise<
 	let continuation: string | null = null;
 
 	try {
-		const tab = await channel.getVideos();
+		const tab =
+			kind === 'shorts'
+				? await channel.getShorts()
+				: kind === 'live'
+					? await channel.getLiveStreams()
+					: await channel.getVideos();
 		continuation = keepPage(tab as unknown as FeedLike);
 		videos = (tab.videos ?? [])
 			.map(toBrowseVideo)
@@ -432,11 +477,11 @@ export async function getComments(videoId: string, cacheDir?: string): Promise<B
 	return flattened;
 }
 
-/** How long a channel's videos are reused before being fetched again. */
-const FEED_CACHE_MS = 10 * 60 * 1000;
+/** How long a channel's videos are served for before being fetched again. */
+const FEED_CACHE_MS = 30 * 60 * 1000;
 
 /** How many channels are fetched at once. */
-const FEED_CONCURRENCY = 4;
+const FEED_CONCURRENCY = 8;
 
 /** How many rounds deeper one request will go looking for older videos. */
 const FEED_MAX_DEEPENING = 3;
@@ -450,26 +495,69 @@ type ChannelFeed = {
 
 const feedCache = new Map<string, ChannelFeed>();
 
-async function loadChannel(channelId: string, cacheDir?: string): Promise<ChannelFeed> {
-	const cached = feedCache.get(channelId);
-	if (cached && Date.now() - cached.at < FEED_CACHE_MS) return cached;
+/** Channels being fetched right now, so two callers wait on one request. */
+const inFlight = new Map<string, Promise<ChannelFeed>>();
 
-	try {
-		const channel = await getChannel(channelId, cacheDir);
-		const loaded: ChannelFeed = {
-			videos: channel.videos,
-			next: channel.continuation,
-			at: Date.now()
-		};
+async function fetchChannel(
+	channelId: string,
+	kind: FeedKind,
+	cacheDir?: string
+): Promise<ChannelFeed> {
+	const key = `${kind}:${channelId}`;
 
-		feedCache.set(channelId, loaded);
+	const existing = inFlight.get(key);
+	if (existing) return existing;
 
-		return loaded;
-	} catch {
-		// One unreachable channel should not empty the whole feed. A stale copy
-		// is better than a hole in it.
-		return cached ?? { videos: [], next: null, at: Date.now() };
+	const request = (async () => {
+		try {
+			const channel = await getChannel(channelId, cacheDir, kind);
+			const loaded: ChannelFeed = {
+				videos: channel.videos.map((video) => ({
+					...video,
+					author: video.author || channel.name,
+					authorId: video.authorId || channelId
+				})),
+				next: channel.continuation,
+				at: Date.now()
+			};
+
+			feedCache.set(key, loaded);
+
+			return loaded;
+		} catch {
+			// One unreachable channel should not empty the whole feed.
+			return feedCache.get(key) ?? { videos: [], next: null, at: Date.now() };
+		} finally {
+			inFlight.delete(key);
+		}
+	})();
+
+	inFlight.set(key, request);
+
+	return request;
+}
+
+/**
+ * A channel's videos, from memory where possible.
+ *
+ * A stale copy is served immediately and refreshed behind it: with a hundred
+ * and sixty subscriptions, waiting for every channel to answer would be a
+ * minute of blank screen for the sake of the handful that changed.
+ */
+async function loadChannel(
+	channelId: string,
+	kind: FeedKind,
+	cacheDir?: string
+): Promise<ChannelFeed> {
+	const cached = feedCache.get(`${kind}:${channelId}`);
+
+	if (!cached) return fetchChannel(channelId, kind, cacheDir);
+
+	if (Date.now() - cached.at >= FEED_CACHE_MS) {
+		void fetchChannel(channelId, kind, cacheDir);
 	}
+
+	return cached;
 }
 
 /** Pulls one more page into a channel's list, if it has one. */
@@ -488,6 +576,44 @@ async function deepenChannel(channel: ChannelFeed): Promise<boolean> {
 function byRecency(a: BrowseVideo, b: BrowseVideo): number {
 	if (a.isLive !== b.isLive) return a.isLive ? -1 : 1;
 	return (a.publishedSecondsAgo ?? Infinity) - (b.publishedSecondsAgo ?? Infinity);
+}
+
+/**
+ * Merges channels into one list, newest first.
+ *
+ * Shorts carry no date at all, so anything undated cannot be ordered against
+ * anything else. Rather than let it fall into channel order - every video of
+ * one channel, then every video of the next - undated videos are dealt out one
+ * per channel, which is the same shape a dated feed ends up with.
+ */
+function mergeChannels(channels: ChannelFeed[]): BrowseVideo[] {
+	const dated: BrowseVideo[] = [];
+	const undated: BrowseVideo[][] = [];
+
+	for (const channel of channels) {
+		const rest: BrowseVideo[] = [];
+
+		for (const video of channel.videos) {
+			if (video.publishedSecondsAgo === null) rest.push(video);
+			else dated.push(video);
+		}
+
+		if (rest.length) undated.push(rest);
+	}
+
+	dated.sort(byRecency);
+
+	const dealt: BrowseVideo[] = [];
+	const deepest = Math.max(0, ...undated.map((channel) => channel.length));
+
+	for (let index = 0; index < deepest; index += 1) {
+		for (const channel of undated) {
+			const video = channel[index];
+			if (video) dealt.push(video);
+		}
+	}
+
+	return [...dated, ...dealt];
 }
 
 export type FeedPage = {
@@ -510,10 +636,11 @@ export type FeedPage = {
  */
 export async function getFeed(
 	channelIds: string[],
-	options: { offset?: number; limit?: number; cacheDir?: string } = {}
+	options: { kind?: FeedKind; offset?: number; limit?: number; cacheDir?: string } = {}
 ): Promise<FeedPage> {
 	const offset = Math.max(0, options.offset ?? 0);
 	const limit = Math.max(1, options.limit ?? 60);
+	const kind = options.kind ?? 'videos';
 
 	const queue = [...channelIds];
 	const channels: ChannelFeed[] = [];
@@ -523,13 +650,13 @@ export async function getFeed(
 			const channelId = queue.shift();
 			if (!channelId) return;
 
-			channels.push(await loadChannel(channelId, options.cacheDir));
+			channels.push(await loadChannel(channelId, kind, options.cacheDir));
 		}
 	});
 
 	await Promise.all(workers);
 
-	const merged = () => channels.flatMap((channel) => channel.videos).sort(byRecency);
+	const merged = () => mergeChannels(channels);
 
 	let videos = merged();
 
