@@ -1,4 +1,4 @@
-import type { SegmentIndexEntry } from './sidx.js';
+import type { SegmentIndexEntry } from './sidx';
 
 /**
  * Reads the segment index out of a WebM initialisation blob.

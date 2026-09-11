@@ -1,4 +1,4 @@
-import type { CastProfile } from './CastSession.js';
+import type { CastProfile } from './CastSession';
 
 /**
  * Builds the manifest for a live stream.

@@ -1,4 +1,4 @@
-import { getCastSession, SegmentNotReadyError } from '@materialious/shared/cast';
+import { getCastSession, SegmentNotReadyError } from '$lib/server/cast';
 import { error } from '@sveltejs/kit';
 import { castCorsHeaders } from '$lib/server/cast';
 

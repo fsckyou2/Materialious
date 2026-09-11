@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { CastSession } from './CastSession.js';
+import { CastSession } from './CastSession';
 
 /**
  * Cast sessions live only in memory, keyed by an unguessable id.
