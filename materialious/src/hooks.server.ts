@@ -13,6 +13,18 @@ sodium.ready.then(() => {
 	captchaSignature = sodium.to_base64(sodium.randombytes_buf(32));
 });
 
+/** What a television's token may not reach, however well it is behaving. */
+const deviceForbidden = [
+	/^\/api\/user\/me/,
+	/^\/api\/user\/delete/,
+	/^\/api\/user\/passwordReset/,
+	/^\/api\/user\/create/,
+	/^\/api\/user\/login/,
+	/^\/api\/user\/logout/,
+	/^\/api\/admin/,
+	/^\/api\/proxy/
+];
+
 let sequelizeAuthenticated = false;
 
 const strictLimiter = new RateLimiter({
@@ -60,6 +72,21 @@ export async function handle({ event, resolve }) {
 		if (bearer) {
 			const device = await authenticateDeviceByToken(bearer);
 			if (device) {
+				// A television is not a browser, and this token is not a login.
+				// It is a long lived secret sitting on a sideloaded box that
+				// anybody with a cable can read, so it acts for the account only
+				// where a television needs to: watching, browsing, and the
+				// history and lists that make watching work. It may not read the
+				// account's key material, change its password, delete it, or
+				// fetch arbitrary urls through the proxy - none of which a
+				// television has ever needed to do.
+				if (deviceForbidden.some((path) => path.test(event.url.pathname))) {
+					return new Response(JSON.stringify({ error: 'Not available to a device' }), {
+						status: 403,
+						headers: { 'Content-Type': 'application/json' }
+					});
+				}
+
 				event.locals.userId = device.UserId;
 			}
 		}
