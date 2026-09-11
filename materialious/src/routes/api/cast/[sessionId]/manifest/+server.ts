@@ -1,4 +1,4 @@
-import { getCastSession, type CastProfile } from '@materialious/shared/cast';
+import { getCastSession, type CastProfile } from '$lib/server/cast';
 import { error } from '@sveltejs/kit';
 import { castBaseUrl, castCorsHeaders } from '$lib/server/cast';
 

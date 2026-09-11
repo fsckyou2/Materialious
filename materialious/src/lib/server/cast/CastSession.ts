@@ -11,10 +11,10 @@ import { CompositeBuffer, UmpReader } from 'googlevideo/ump';
 import { LiveMetadata } from 'googlevideo/protos';
 import type { CacheManager, RequestMetadataManager } from 'googlevideo/utils';
 import type { SabrFormat } from 'googlevideo/shared-types';
-import { getDownloadSession } from '../download/session.js';
-import { parseSegmentIndex, type SegmentIndexEntry } from './sidx.js';
-import { parseWebmIndex } from './webm.js';
-import { buildLiveManifest, type LiveFormat } from './liveManifest.js';
+import { getDownloadSession } from '@materialious/shared/download';
+import { parseSegmentIndex, type SegmentIndexEntry } from './sidx';
+import { parseWebmIndex } from './webm';
+import { buildLiveManifest, type LiveFormat } from './liveManifest';
 
 /**
  * Codec profiles a receiver can be asked to play.

@@ -1,4 +1,4 @@
-import { createCastSession } from '@materialious/shared/cast';
+import { createCastSession } from '$lib/server/cast';
 import { error, json } from '@sveltejs/kit';
 import z from 'zod';
 import { castBaseUrl } from '$lib/server/cast';
