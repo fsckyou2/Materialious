@@ -16,7 +16,10 @@ export async function GET({ params, url, locals }) {
 	}
 
 	const requested = url.searchParams.get('kind');
-	const kind = requested === 'shorts' || requested === 'live' ? requested : 'videos';
+	const kind =
+		requested === 'shorts' || requested === 'live' || requested === 'playlists'
+			? requested
+			: 'videos';
 
 	try {
 		return json({

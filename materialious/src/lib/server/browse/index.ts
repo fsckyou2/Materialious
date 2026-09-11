@@ -2,11 +2,13 @@ import { YTNodes, type Helpers } from 'youtubei.js';
 import type {
 	BrowseChannel,
 	BrowseComment,
+	BrowsePlaylist,
 	BrowseResults,
 	BrowseVideo,
 	ChannelPage,
 	FeedKind,
 	FeedPage,
+	PlaylistPage,
 	VideoPage
 } from './types';
 
@@ -229,6 +231,33 @@ function toBrowseChannel(item: Helpers.YTNode): BrowseChannel | null {
 	return null;
 }
 
+function toBrowsePlaylist(item: Helpers.YTNode): BrowsePlaylist | null {
+	if (!item.is(YTNodes.LockupView) || item.content_type !== 'PLAYLIST' || !item.content_id) {
+		return null;
+	}
+
+	const rows = item.metadata?.metadata?.metadata_rows ?? [];
+
+	// A playlist's picture is the first video's, held in a collection rather
+	// than a plain thumbnail - the rest of the stack is drawn behind it.
+	const image = item.content_image as
+		| { primary_thumbnail?: { image?: { url: string; width?: number }[] } }
+		| undefined;
+
+	const parts = rows
+		.flatMap((row) => row.metadata_parts ?? [])
+		.map((part) => part.text?.text ?? '')
+		.filter((text) => text.length > 0);
+
+	return {
+		playlistId: item.content_id,
+		title: item.metadata?.title?.toString() ?? '',
+		author: parts.find((text) => !/^view full playlist$/i.test(text) && !/video/i.test(text)) ?? '',
+		thumbnail: bestThumbnail(image?.primary_thumbnail?.image),
+		videoCountText: parts.find((text) => /video/i.test(text)) ?? ''
+	};
+}
+
 /**
  * Feeds that still have more to give.
  *
@@ -328,6 +357,7 @@ export async function search(
 
 	const videos: BrowseVideo[] = [];
 	const channels: BrowseChannel[] = [];
+	const playlists: BrowsePlaylist[] = [];
 
 	for (const item of results.results ?? []) {
 		const video = toBrowseVideo(item);
@@ -336,11 +366,17 @@ export async function search(
 			continue;
 		}
 
+		const playlist = toBrowsePlaylist(item);
+		if (playlist) {
+			playlists.push(playlist);
+			continue;
+		}
+
 		const channel = toBrowseChannel(item);
 		if (channel) channels.push(channel);
 	}
 
-	return { videos, channels, continuation: keepPage(results as unknown as FeedLike) };
+	return { videos, channels, playlists, continuation: keepPage(results as unknown as FeedLike) };
 }
 
 export async function getChannel(
@@ -351,6 +387,7 @@ export async function getChannel(
 	const channel = await innertube.getChannel(channelId);
 
 	let videos: BrowseVideo[] = [];
+	let playlists: BrowsePlaylist[] = [];
 	let continuation: string | null = null;
 
 	try {
@@ -359,8 +396,22 @@ export async function getChannel(
 				? await channel.getShorts()
 				: kind === 'live'
 					? await channel.getLiveStreams()
-					: await channel.getVideos();
+					: kind === 'playlists'
+						? await channel.getPlaylists()
+						: await channel.getVideos();
+
 		continuation = keepPage(tab as unknown as FeedLike);
+
+		// The playlists tab answers with the same lockups as everything else,
+		// so what comes back is sorted by what it turns out to be.
+		playlists = ((tab as unknown as { playlists?: Helpers.YTNode[] }).playlists ?? tab.videos ?? [])
+			.map(toBrowsePlaylist)
+			.filter((playlist): playlist is BrowsePlaylist => playlist !== null)
+			.map((playlist) => ({
+				...playlist,
+				author: playlist.author || (channel.metadata?.title ?? '')
+			}));
+
 		videos = (tab.videos ?? [])
 			.map(toBrowseVideo)
 			.filter((video): video is BrowseVideo => video !== null)
@@ -403,7 +454,32 @@ export async function getChannel(
 		description: channel.metadata?.description ?? '',
 		subscriberText,
 		videos,
+		playlists,
 		continuation
+	};
+}
+
+/**
+ * One playlist, with its videos.
+ *
+ * Playlists are the one list a device can be handed whole: they come back in
+ * the order somebody put them in, which is the order they should be played.
+ */
+export async function getPlaylist(playlistId: string): Promise<PlaylistPage> {
+	const innertube = await getBrowseSession();
+	const playlist = await innertube.getPlaylist(playlistId);
+
+	const videos = (playlist.videos ?? [])
+		.map(toBrowseVideo)
+		.filter((video): video is BrowseVideo => video !== null);
+
+	return {
+		playlistId,
+		title: playlist.info?.title ?? '',
+		author: playlist.info?.author?.name ?? '',
+		description: playlist.info?.description ?? '',
+		videos,
+		continuation: keepPage(playlist as unknown as FeedLike)
 	};
 }
 
