@@ -31,7 +31,15 @@ const strictLimiter = new RateLimiter({
 	IP: [10, 'm']
 });
 
-const sensitivePaths = [/^\/api\/user\/create$/, /^\/api\/user\/login$/];
+const sensitivePaths = [
+	/^\/api\/user\/create$/,
+	/^\/api\/user\/login$/,
+	// Pairing hands out a six character code to an unauthenticated caller, and
+	// claiming one guesses at codes. Neither is something anybody does ten times
+	// a minute, and both are worth a lot to somebody who can do it endlessly.
+	/^\/api\/devices\/pair$/,
+	/^\/api\/devices\/claim$/
+];
 
 export async function handle({ event, resolve }) {
 	if (!isOwnBackend()?.internalAuth) {

@@ -321,6 +321,20 @@ export class CastSession {
 	}
 
 	/**
+	 * SABR is one conversation, and the adapter is asked which moment of the
+	 * video is wanted through a field rather than through the request - so two
+	 * requests in flight at once would be answering each other's question.
+	 * Requests started from outside take their turn.
+	 */
+	private sabrTurn: Promise<unknown> = Promise.resolve();
+
+	private takeTurn<T>(run: () => Promise<T>): Promise<T> {
+		const next = this.sabrTurn.then(run, run);
+		this.sabrTurn = next.catch(() => undefined);
+		return next;
+	}
+
+	/**
 	 * Runs one request through the SABR interceptor pair and returns the media
 	 * bytes. Mirrors what `ShakaPlayerAdapter` does inside the browser.
 	 */
@@ -329,6 +343,7 @@ export class CastSession {
 		headers: Record<string, string>;
 		startTime: number | null;
 		isInit: boolean;
+		playerTime: number;
 	}): Promise<Uint8Array> {
 		return (await this.sabrRequestWithHeader(options)).data;
 	}
@@ -344,9 +359,29 @@ export class CastSession {
 		headers: Record<string, string>;
 		startTime: number | null;
 		isInit: boolean;
+		/** The moment of the video this request is for, in seconds. */
+		playerTime: number;
 		/** Live probes ask past the edge, where an empty answer is the answer. */
 		allowEmpty?: boolean;
 	}): Promise<{ data: Uint8Array; sequenceNumber: number | null; live?: LiveMetadata }> {
+		return this.takeTurn(() => this.performSabrRequest(options));
+	}
+
+	/**
+	 * The request itself. Called with the session's turn already taken - the
+	 * response interceptor can ask for a follow-up request, and that one is
+	 * part of the same turn rather than waiting behind it.
+	 */
+	private async performSabrRequest(options: {
+		url: string;
+		headers: Record<string, string>;
+		startTime: number | null;
+		isInit: boolean;
+		playerTime?: number;
+		allowEmpty?: boolean;
+	}): Promise<{ data: Uint8Array; sequenceNumber: number | null; live?: LiveMetadata }> {
+		if (options.playerTime !== undefined) this.adapter.playerTime = options.playerTime;
+
 		if (!this.adapter.requestInterceptor || !this.adapter.responseInterceptor) {
 			throw new Error('SABR adapter is not attached');
 		}
@@ -415,12 +450,14 @@ export class CastSession {
 				url,
 				method: 'POST',
 				headers: {},
-				data: await this.sabrRequest({
-					url,
-					headers: headers ?? {},
-					startTime: options.startTime,
-					isInit: options.isInit
-				})
+				data: (
+					await this.performSabrRequest({
+						url,
+						headers: headers ?? {},
+						startTime: options.startTime,
+						isInit: options.isInit
+					})
+				).data
 			})
 		});
 
@@ -480,12 +517,12 @@ export class CastSession {
 				throw new Error(`Format ${key} has no index range`);
 			}
 
-			this.adapter.playerTime = 0;
 			const init = await this.sabrRequest({
 				url: this.formatUrl(format),
 				headers: { Range: `bytes=0-${indexEnd}` },
 				startTime: 0,
-				isInit: true
+				isInit: true,
+				playerTime: 0
 			});
 
 			// The two containers YouTube serves index themselves differently: MP4
@@ -530,13 +567,12 @@ export class CastSession {
 
 		const promise = (async () => {
 			const state = await this.getFormatState(key);
-			this.adapter.playerTime = entry.startTime;
-
 			const data = await this.sabrRequest({
 				url: this.formatUrl(state.format),
 				headers: {},
 				startTime: entry.startTime,
-				isInit: false
+				isInit: false,
+				playerTime: entry.startTime
 			});
 
 			this.segmentCache.set(cacheKey, data);
@@ -668,13 +704,12 @@ export class CastSession {
 		if (!format) return undefined;
 
 		const pastTheEdge = 10_000_000;
-		this.adapter.playerTime = pastTheEdge;
-
 		const { live } = await this.sabrRequestWithHeader({
 			url: this.formatUrl(format),
 			headers: {},
 			startTime: pastTheEdge,
 			isInit: false,
+			playerTime: pastTheEdge,
 			allowEmpty: true
 		});
 
@@ -759,13 +794,12 @@ export class CastSession {
 		if (!format) throw new Error(`Unknown format ${key}`);
 
 		const startTime = number * this.targetDurationSeconds;
-		this.adapter.playerTime = startTime;
-
 		const { data } = await this.sabrRequestWithHeader({
 			url: this.formatUrl(format),
 			headers: {},
 			startTime,
 			isInit: false,
+			playerTime: startTime,
 			allowEmpty: true
 		});
 
