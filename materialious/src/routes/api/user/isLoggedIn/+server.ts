@@ -1,4 +1,4 @@
-import { getUser } from '$lib/server/user';
+import { requireUser } from '$lib/server/user';
 import { error } from '@sveltejs/kit';
 
 export async function GET({ locals }) {
@@ -6,7 +6,7 @@ export async function GET({ locals }) {
 		throw error(401);
 	}
 
-	await getUser(locals.userId);
+	await requireUser(locals.userId);
 
 	return new Response();
 }

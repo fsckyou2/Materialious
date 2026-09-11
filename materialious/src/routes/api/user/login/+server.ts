@@ -16,7 +16,7 @@ export async function POST({ request, cookies, locals }) {
 		throw error(500);
 	}
 
-  const userLogin = zUserLogin.safeParse(await request.json());
+  const userLogin = zUserLogin.safeParse(await request.json().catch(() => null));
 
 	if (!userLogin.success) throw error(401);
 

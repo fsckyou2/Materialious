@@ -1,5 +1,5 @@
 import { persistedStoreKeys } from '$lib/externalSettings/settings';
-import { getUser } from '$lib/server/user';
+import { requireUser } from '$lib/server/user';
 import { error, json } from '@sveltejs/kit';
 import z from 'zod';
 
@@ -10,7 +10,7 @@ function keyAllowed(key: string) {
 export async function GET({ locals, params }) {
 	keyAllowed(params.key);
 
-	const user = await getUser(locals.userId);
+	const user = await requireUser(locals.userId);
 
 	return json(await user.getKeyValue(params.key));
 }
@@ -18,7 +18,7 @@ export async function GET({ locals, params }) {
 export async function DELETE({ locals, params }) {
 	keyAllowed(params.key);
 
-	const user = await getUser(locals.userId);
+	const user = await requireUser(locals.userId);
 	await user.deleteKeyValue(params.key);
 
 	return new Response();
@@ -32,9 +32,9 @@ const zUpdateKeyStore = z.object({
 export async function POST({ locals, params, request }) {
 	keyAllowed(params.key);
 
-	const user = await getUser(locals.userId);
+	const user = await requireUser(locals.userId);
 
-	const keyValue = zUpdateKeyStore.safeParse(await request.json());
+	const keyValue = zUpdateKeyStore.safeParse(await request.json().catch(() => null));
 
 	if (!keyValue.success) throw error(400);
 

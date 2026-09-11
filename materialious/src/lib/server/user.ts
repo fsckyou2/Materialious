@@ -53,16 +53,29 @@ export class User {
 	async addSubscription(subscription: Omit<ChannelSubscriptionModel, 'userId'>) {
 		if (await this.amSubscribed(subscription.id)) return;
 
-		await getSequelize().ChannelSubscriptionTable.create({
-			...subscription,
-			UserId: this.id
-		});
+		try {
+			await getSequelize().ChannelSubscriptionTable.create({
+				...subscription,
+				UserId: this.id
+			});
+		} catch (err) {
+			// Row ids are unique across the whole table, so a duplicate means the
+			// id is one another account already holds. Anything else is the
+			// database itself and belongs in the log as a 500.
+			if ((err as { name?: string }).name !== 'SequelizeUniqueConstraintError') throw err;
+			throw error(409, 'Subscription id already in use');
+		}
 	}
 
+	// The row id is derived from the channel id under the account's own key, so
+	// two accounts never name the same row - but it arrives from the client as a
+	// path parameter, and an id someone else's account owns would otherwise be
+	// theirs to read or delete.
 	async removeSubscription(id: string) {
 		await getSequelize().ChannelSubscriptionTable.destroy({
 			where: {
-				id
+				id,
+				UserId: this.id
 			}
 		});
 	}
@@ -71,7 +84,8 @@ export class User {
 		return (
 			(await getSequelize().ChannelSubscriptionTable.count({
 				where: {
-					id
+					id,
+					UserId: this.id
 				}
 			})) > 0
 		);
@@ -80,7 +94,7 @@ export class User {
 	async subscriptions(): Promise<ChannelSubscriptionModel[]> {
 		const subscriptions = await getSequelize().ChannelSubscriptionTable.findAll({
 			where: {
-				userId: this.data.id
+				UserId: this.id
 			}
 		});
 
@@ -206,6 +220,18 @@ export async function createUser(user: CreateUser): Promise<User> {
 	}
 
 	return new User(createdUser as UserTableModel);
+}
+
+/**
+ * The account behind a request, or a 401.
+ *
+ * Without the check an anonymous request reaches `getUser(undefined)`, which
+ * finds no row and answers 404 - authorisation by lookup miss, and the wrong
+ * status for a caller who only needs to be told to log in.
+ */
+export async function requireUser(userId: string | undefined): Promise<User> {
+	if (!userId) throw error(401, 'Unauthorized');
+	return await getUser(userId);
 }
 
 export async function getUser(identifier: string): Promise<User> {

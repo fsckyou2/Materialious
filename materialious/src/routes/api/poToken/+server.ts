@@ -13,7 +13,7 @@ export async function POST({ request, locals }) {
 		throw error(401);
 	}
 
-	const data = zPoTokenGenSchema.safeParse(await request.json());
+	const data = zPoTokenGenSchema.safeParse(await request.json().catch(() => null));
 
 	if (!data.success) {
 		throw error(400, data.error.message);

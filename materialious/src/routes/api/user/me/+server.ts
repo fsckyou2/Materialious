@@ -1,10 +1,10 @@
-import { getUser } from '$lib/server/user';
+import { requireUser } from '$lib/server/user';
 import { error, json } from '@sveltejs/kit';
 
 export async function GET({ locals }) {
 	if (!locals.userId) throw error(401);
 
-	const user = await getUser(locals.userId);
+	const user = await requireUser(locals.userId);
 
 	return json({
 		username: user.data.username,

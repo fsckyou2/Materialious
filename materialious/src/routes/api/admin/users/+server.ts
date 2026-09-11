@@ -1,4 +1,4 @@
-import { getUser } from '$lib/server/user';
+import { requireUser } from '$lib/server/user';
 import { getSequelize } from '$lib/server/database';
 import { error, json } from '@sveltejs/kit';
 import { isAdminUsername } from '$lib/shared';
@@ -6,7 +6,7 @@ import { isAdminUsername } from '$lib/shared';
 export async function GET({ locals }) {
 	if (!locals.userId) throw error(401);
 
-	const user = await getUser(locals.userId);
+	const user = await requireUser(locals.userId);
 	if (!isAdminUsername(user.data.username)) {
 		throw error(403);
 	}

@@ -84,9 +84,30 @@ function readElement(bytes: Uint8Array, pos: number): Element | null {
 	};
 }
 
+/**
+ * Whether an element claims to be inside the buffer it came from.
+ *
+ * A truncated or corrupt header can declare a length of any size the format
+ * allows, which is far larger than any file: believed, it becomes a loop
+ * counted in the quadrillions, and this process has one thread with which to
+ * serve everybody.
+ */
+function withinBuffer(bytes: Uint8Array, element: Element): boolean {
+	return (
+		element.dataLength >= 0 &&
+		element.dataStart <= bytes.length &&
+		element.dataLength <= bytes.length - element.dataStart
+	);
+}
+
 function readUnsigned(bytes: Uint8Array, start: number, length: number): number {
+	// Eight bytes is the largest integer this format defines, and the most a
+	// number here can hold anyway. Anything claiming more is a corrupt header,
+	// not a very large number.
+	const bounded = Math.min(length, 8, Math.max(0, bytes.length - start));
+
 	let value = 0;
-	for (let i = 0; i < length; i++) {
+	for (let i = 0; i < bounded; i++) {
 		value = value * 256 + bytes[start + i];
 	}
 	return value;
@@ -100,10 +121,14 @@ function* children(bytes: Uint8Array, from: number, to: number): Generator<Eleme
 		const element = readElement(bytes, pos);
 		if (!element) return;
 
+		// A child that does not fit in what was read cannot be walked past, and
+		// its contents cannot be trusted to be what they claim.
+		if (!withinBuffer(bytes, element)) return;
+
 		yield element;
 
-		// An unknown length child cannot be skipped over safely.
-		if (element.dataLength < 0) return;
+		// No progress means a zero length element; stop rather than sit on it.
+		if (element.end <= pos) return;
 		pos = element.end;
 	}
 }

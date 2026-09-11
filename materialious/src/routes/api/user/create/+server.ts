@@ -24,7 +24,7 @@ export async function POST({ request, cookies, locals }) {
 		throw error(500);
 	}
 
-	const userToCreate = zUserCreate.safeParse(await request.json());
+	const userToCreate = zUserCreate.safeParse(await request.json().catch(() => null));
 
 	if (!userToCreate.success) throw error(400);
 
