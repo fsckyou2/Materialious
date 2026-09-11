@@ -66,7 +66,7 @@ export type BrowseVideo = Pick<
 export type VideoKind = VideoBase['type'];
 
 /** The channel tabs a feed can be built from. */
-export type FeedKind = 'videos' | 'shorts' | 'live';
+export type FeedKind = 'videos' | 'shorts' | 'live' | 'playlists';
 
 /**
  * Browsing on behalf of a client that cannot browse for itself.
@@ -86,9 +86,26 @@ export type BrowseChannel = {
 	subscriberText: string;
 };
 
+/**
+ * A playlist, as a device is told about it.
+ *
+ * A list of videos is not a video, and the difference shows on screen: it has
+ * no length and no age, and pressing it opens a list rather than playing
+ * something.
+ */
+export type BrowsePlaylist = {
+	playlistId: string;
+	title: string;
+	author: string;
+	thumbnail: string | null;
+	/** "34 videos", when YouTube says so. */
+	videoCountText: string;
+};
+
 export type BrowseResults = {
 	videos: BrowseVideo[];
 	channels: BrowseChannel[];
+	playlists: BrowsePlaylist[];
 	/** Brings back the next page of results, when there is one. */
 	continuation: string | null;
 };
@@ -100,6 +117,18 @@ export type ChannelPage = {
 	description: string;
 	/** "1.2M subscribers", as YouTube phrases it. */
 	subscriberText: string;
+	videos: BrowseVideo[];
+	/** Empty unless the playlists tab was the one asked for. */
+	playlists: BrowsePlaylist[];
+	continuation: string | null;
+};
+
+/** One playlist, opened. */
+export type PlaylistPage = {
+	playlistId: string;
+	title: string;
+	author: string;
+	description: string;
 	videos: BrowseVideo[];
 	continuation: string | null;
 };
