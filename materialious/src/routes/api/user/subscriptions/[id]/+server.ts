@@ -1,4 +1,4 @@
-import { getUser } from '$lib/server/user';
+import { requireUser } from '$lib/server/user';
 import { error, json } from '@sveltejs/kit';
 import z from 'zod';
 
@@ -10,11 +10,11 @@ const zSubscriptionCreate = z.object({
 });
 
 export async function POST({ locals, request, params }) {
-	const subscription = zSubscriptionCreate.safeParse(await request.json());
+	const subscription = zSubscriptionCreate.safeParse(await request.json().catch(() => null));
 
 	if (!subscription.success) error(400);
 
-	const user = await getUser(locals.userId);
+	const user = await requireUser(locals.userId);
 	await user.addSubscription({
 		...subscription.data,
 		id: params.id,
@@ -25,21 +25,21 @@ export async function POST({ locals, request, params }) {
 }
 
 export async function PATCH({ locals, params }) {
-	const user = await getUser(locals.userId);
+	const user = await requireUser(locals.userId);
 	await user.subscriptionRssUpdated(params.id);
 
 	return new Response();
 }
 
 export async function DELETE({ locals, params }) {
-	const user = await getUser(locals.userId);
+	const user = await requireUser(locals.userId);
 	await user.removeSubscription(params.id);
 
 	return new Response();
 }
 
 export async function GET({ locals, params }) {
-	const user = await getUser(locals.userId);
+	const user = await requireUser(locals.userId);
 
 	return json({
 		amSubscribed: await user.amSubscribed(params.id)

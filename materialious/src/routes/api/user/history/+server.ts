@@ -29,7 +29,7 @@ const zUserHistory = z.object({
 export async function POST({ locals, request }) {
 	if (!locals.userId) throw error(401, 'Unauthorized');
 
-	const data = zUserHistory.safeParse(await request.json());
+	const data = zUserHistory.safeParse(await request.json().catch(() => null));
 
 	if (!data.success) throw error(400, data.error.message);
 
@@ -111,6 +111,8 @@ export async function GET({ locals, url }) {
 }
 
 export async function DELETE({ locals }) {
+	if (!locals.userId) throw error(401, 'Unauthorized');
+
 	await getSequelize().UserHistoryTable.destroy({
 		where: {
 			UserId: locals.userId

@@ -2,7 +2,8 @@ declare global {
 	namespace App {
 		// interface Error {}
 		interface Locals {
-			userId: string;
+			/** Absent when the request carries neither a session cookie nor a device token. */
+			userId?: string;
 			captchaKey: string;
 			captchaSignature: string;
 		}

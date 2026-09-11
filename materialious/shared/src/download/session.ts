@@ -7,7 +7,7 @@ const REQUEST_KEY = 'O43z0dpjhgX20SCx4KAo';
 
 Platform.shim.eval = async (data: Types.BuildScriptResult) => new Function(data.output)();
 
-export async function getDownloadSession(videoId: string, cacheDir?: string): Promise<Innertube> {
+export async function getDownloadSession(videoId: string): Promise<Innertube> {
 	let poToken: string | undefined;
 
 	try {
@@ -18,7 +18,7 @@ export async function getDownloadSession(videoId: string, cacheDir?: string): Pr
 
 	return await Innertube.create({
 		fetch,
-		cache: new UniversalCache(true, cacheDir),
+		cache: new UniversalCache(true),
 		user_agent: USER_AGENT,
 		...(poToken ? { po_token: poToken } : {})
 	});

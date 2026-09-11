@@ -1,4 +1,4 @@
-import { getUser } from '$lib/server/user';
+import { requireUser } from '$lib/server/user';
 import { error, json } from '@sveltejs/kit';
 import z from 'zod';
 
@@ -18,7 +18,7 @@ const KEY = 'favouriteChannels';
 export async function GET({ locals }) {
 	if (!locals.userId) throw error(401);
 
-	const user = await getUser(locals.userId);
+	const user = await requireUser(locals.userId);
 
 	try {
 		const stored = await user.getKeyValue(KEY);
@@ -38,10 +38,10 @@ const zFavourites = z.object({
 export async function POST({ locals, request }) {
 	if (!locals.userId) throw error(401);
 
-	const body = zFavourites.safeParse(await request.json());
+	const body = zFavourites.safeParse(await request.json().catch(() => null));
 	if (!body.success) throw error(400, body.error.message);
 
-	const user = await getUser(locals.userId);
+	const user = await requireUser(locals.userId);
 	await user.addOrUpdateKeyValue(KEY, body.data.valueCipher, body.data.valueNonce);
 
 	return new Response();

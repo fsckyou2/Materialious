@@ -199,10 +199,9 @@ export class CastSession {
 	static async create(
 		id: string,
 		videoId: string,
-		userId: string | undefined,
-		cacheDir?: string
+		userId: string | undefined
 	): Promise<CastSession> {
-		const innertube = await getDownloadSession(videoId, cacheDir);
+		const innertube = await getDownloadSession(videoId);
 		const info = await innertube.getInfo(videoId);
 
 		const session = new CastSession(id, videoId, userId, innertube, info);
@@ -592,7 +591,19 @@ export class CastSession {
 
 		const url = new URL(target);
 
+		// The receiver only ever asks for URLs this session put in the manifest,
+		// and those are all timedtext tracks. Anything else is someone else's
+		// idea: the request below carries this session's PO token, so a wider
+		// target would make the gateway a signed fetcher for whoever asked.
+		if (url.protocol !== 'https:') {
+			throw new Error('Caption url is not whitelisted');
+		}
+
 		if (url.host !== 'www.youtube.com' && url.host !== 'youtube.com') {
+			throw new Error('Caption url is not whitelisted');
+		}
+
+		if (url.pathname !== '/api/timedtext') {
 			throw new Error('Caption url is not whitelisted');
 		}
 
@@ -604,7 +615,12 @@ export class CastSession {
 		}
 		url.searchParams.delete('xosf');
 
-		const response = await fetch(url, { signal: AbortSignal.timeout(10000) });
+		// A redirect would take the token somewhere that was never checked, so
+		// they are read as failures rather than followed.
+		const response = await fetch(url, {
+			signal: AbortSignal.timeout(10000),
+			redirect: 'manual'
+		});
 
 		if (!response.ok) {
 			throw new Error(`Captions unavailable (${response.status})`);
@@ -810,10 +826,27 @@ export class CastSession {
 			if (isAborted()) return;
 			if (piece.end < cursor || piece.start > end) continue;
 
+			// The index said this piece covers the cursor, so it has to start at
+			// or before it. If it starts after, the index and the stream disagree:
+			// a negative offset into the slice below would quietly hand back the
+			// tail of the segment as if it were the middle of the file.
+			if (piece.start > cursor) {
+				throw new Error(
+					`Gap in ${key}: byte ${cursor} is not covered, next piece starts at ${piece.start}`
+				);
+			}
+
 			const data = await piece.get();
 			const from = cursor - piece.start;
 			const to = Math.min(data.length - 1, end - piece.start);
-			if (to < from) continue;
+
+			// A segment shorter than the index promised. Skipping it would stall
+			// the cursor here and repeat the same read for every piece after it.
+			if (to < from) {
+				throw new Error(
+					`Short segment in ${key} at byte ${piece.start}: got ${data.length} bytes, expected ${piece.end - piece.start + 1}`
+				);
+			}
 
 			yield data.slice(from, to + 1);
 
