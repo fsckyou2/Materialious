@@ -31,8 +31,15 @@ export async function GET({ params, request }) {
 	const rangeHeader = request.headers.get('range');
 	const match = rangeHeader?.match(/bytes=(\d*)-(\d*)/);
 
-	const start = match?.[1] ? Number(match[1]) : 0;
-	const end = match?.[2] ? Math.min(Number(match[2]), total - 1) : total - 1;
+	// `bytes=-500` asks for the last five hundred bytes, not the first. Read as
+	// a start of zero it answers a question nobody asked, with the wrong end of
+	// the file and a straight face - players that check a file's tail get bytes
+	// that look like data and are not.
+	const suffix = !match?.[1] && !!match?.[2];
+
+	const start = suffix ? Math.max(0, total - Number(match[2])) : match?.[1] ? Number(match[1]) : 0;
+
+	const end = !suffix && match?.[2] ? Math.min(Number(match[2]), total - 1) : total - 1;
 
 	if (start > end || start >= total) {
 		return new Response(null, {
