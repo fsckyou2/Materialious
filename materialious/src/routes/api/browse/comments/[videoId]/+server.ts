@@ -1,4 +1,4 @@
-import { getComments } from '@materialious/shared/browse';
+import { getComments, BROWSE_CONTRACT_VERSION } from '$lib/server/browse';
 import { error, json } from '@sveltejs/kit';
 
 /** Top comments on a video, for clients that cannot ask YouTube themselves. */
@@ -12,7 +12,7 @@ export async function GET({ params, locals }) {
 	}
 
 	try {
-		return json({ comments: await getComments(params.videoId) });
+		return json({ comments: await getComments(params.videoId), contract: BROWSE_CONTRACT_VERSION });
 	} catch (err) {
 		throw error(502, err instanceof Error ? err.message : 'Could not load comments');
 	}

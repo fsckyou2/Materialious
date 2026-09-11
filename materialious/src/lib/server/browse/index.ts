@@ -1,59 +1,21 @@
 import { YTNodes, type Helpers } from 'youtubei.js';
+import type {
+	BrowseChannel,
+	BrowseComment,
+	BrowseResults,
+	BrowseVideo,
+	ChannelPage,
+	FeedKind,
+	FeedPage,
+	VideoPage
+} from './types';
+
+// Re-exported so callers can take the shapes and the code that fills them
+// from one place.
+export type * from './types';
+export { BROWSE_CONTRACT_VERSION } from './types';
 import { randomUUID } from 'node:crypto';
-import { getBrowseSession } from './session.js';
-
-/**
- * Browsing on behalf of a client that cannot browse for itself.
- *
- * The web app runs youtubei.js in the browser, which a television app has no
- * way to reach, so the same lookups are exposed here instead. Shapes are
- * deliberately flat: a client rendering a row of thumbnails should not have to
- * understand YouTube's node types.
- */
-
-export type BrowseVideo = {
-	videoId: string;
-	title: string;
-	author: string;
-	authorId: string;
-	lengthSeconds: number;
-	publishedText: string;
-	/**
-	 * Roughly how old the video is, in seconds.
-	 *
-	 * Feeds carry an age in words rather than a date, so this is read back out
-	 * of that text. It is approximate by construction - "2 weeks ago" covers a
-	 * week either side - but it is enough to put a merged feed in order, which
-	 * is the only thing asking for it.
-	 */
-	publishedSecondsAgo: number | null;
-	viewCountText: string;
-	thumbnail: string | null;
-	isLive: boolean;
-	/** What kind of thing this is, since a feed can hold all three. */
-	kind: VideoKind;
-};
-
-export type VideoKind = 'video' | 'short' | 'live';
-
-/** The channel tabs a feed can be built from. */
-export type FeedKind = 'videos' | 'shorts' | 'live';
-
-export type BrowseChannel = {
-	channelId: string;
-	name: string;
-	thumbnail: string | null;
-	/** The @handle, which is what YouTube returns in `subscriber_count`. */
-	handle: string;
-	subscriberText: string;
-};
-
-export type BrowseResults = {
-	videos: BrowseVideo[];
-	channels: BrowseChannel[];
-	/** Brings back the next page of results, when there is one. */
-	continuation: string | null;
-};
+import { getBrowseSession } from './session';
 
 function secondsFromLabel(label: string | undefined): number {
 	if (!label) return 0;
@@ -148,8 +110,8 @@ export function toBrowseVideo(item: Helpers.YTNode): BrowseVideo | null {
 			publishedSecondsAgo: secondsSincePublished(video.published?.toString()),
 			viewCountText: video.view_count?.toString() ?? '',
 			thumbnail: bestThumbnail(video.thumbnails),
-			isLive: video.is_live === true,
-			kind: video.is_live === true ? 'live' : 'video'
+			liveNow: video.is_live === true,
+			type: video.is_live === true ? 'stream' : 'video'
 		};
 	}
 
@@ -194,8 +156,8 @@ export function toBrowseVideo(item: Helpers.YTNode): BrowseVideo | null {
 			thumbnail: bestThumbnail(
 				item.content_image?.is(YTNodes.ThumbnailView) ? item.content_image.image : undefined
 			),
-			isLive: live,
-			kind: live ? 'live' : 'video'
+			liveNow: live,
+			type: live ? 'stream' : 'video'
 		};
 	}
 
@@ -218,8 +180,8 @@ export function toBrowseVideo(item: Helpers.YTNode): BrowseVideo | null {
 			publishedSecondsAgo: null,
 			viewCountText: item.overlay_metadata?.secondary_text?.toString() ?? '',
 			thumbnail: bestThumbnail(item.thumbnail) ?? shortsThumbnail(videoId),
-			isLive: false,
-			kind: 'short'
+			liveNow: false,
+			type: 'shortVideo'
 		};
 	}
 
@@ -268,8 +230,17 @@ function toBrowseChannel(item: Helpers.YTNode): BrowseChannel | null {
  */
 const pages = new Map<string, { feed: FeedLike; at: number }>();
 
-/** How long an unused page is kept before it is forgotten. */
-const PAGE_TTL_MS = 15 * 60 * 1000;
+/**
+ * How long an unused page is kept before it is forgotten.
+ *
+ * Longer than a channel is cached for, deliberately: a channel's cached copy
+ * holds the token for its next page, so a token that expired first would leave
+ * a channel that still looks current holding an address that no longer works.
+ */
+const PAGE_TTL_MS = 45 * 60 * 1000;
+
+/** How many pages are held at once, oldest evicted first. */
+const MAX_PAGES = 500;
 
 type FeedLike = {
 	videos: Helpers.YTNode[];
@@ -289,6 +260,14 @@ function keepPage(feed: FeedLike | undefined): string | null {
 	if (!feed?.has_continuation) return null;
 
 	forgetStalePages();
+
+	// Tokens are handed out on request, so their number is somebody else's
+	// decision unless it is made here. The oldest goes; its owner asks again.
+	while (pages.size >= MAX_PAGES) {
+		const oldest = pages.keys().next().value;
+		if (oldest === undefined) break;
+		pages.delete(oldest);
+	}
 
 	const token = randomUUID();
 	pages.set(token, { feed, at: Date.now() });
@@ -330,10 +309,9 @@ export async function continuePage(token: string): Promise<{
  */
 export async function search(
 	query: string,
-	type: 'video' | 'channel' = 'video',
-	cacheDir?: string
+	type: 'video' | 'channel' = 'video'
 ): Promise<BrowseResults> {
-	const innertube = await getBrowseSession(cacheDir);
+	const innertube = await getBrowseSession();
 	const results =
 		type === 'channel'
 			? await innertube.search(query, { type: 'channel' })
@@ -356,23 +334,11 @@ export async function search(
 	return { videos, channels, continuation: keepPage(results as unknown as FeedLike) };
 }
 
-export type ChannelPage = {
-	channelId: string;
-	name: string;
-	thumbnail: string | null;
-	description: string;
-	/** "1.2M subscribers", as YouTube phrases it. */
-	subscriberText: string;
-	videos: BrowseVideo[];
-	continuation: string | null;
-};
-
 export async function getChannel(
 	channelId: string,
-	cacheDir?: string,
 	kind: FeedKind = 'videos'
 ): Promise<ChannelPage> {
-	const innertube = await getBrowseSession(cacheDir);
+	const innertube = await getBrowseSession();
 	const channel = await innertube.getChannel(channelId);
 
 	let videos: BrowseVideo[] = [];
@@ -432,22 +398,8 @@ export async function getChannel(
 	};
 }
 
-export type VideoPage = {
-	videoId: string;
-	title: string;
-	author: string;
-	authorId: string;
-	description: string;
-	lengthSeconds: number;
-	viewCountText: string;
-	publishedText: string;
-	thumbnail: string | null;
-	isLive: boolean;
-	related: BrowseVideo[];
-};
-
-export async function getVideo(videoId: string, cacheDir?: string): Promise<VideoPage> {
-	const innertube = await getBrowseSession(cacheDir);
+export async function getVideo(videoId: string): Promise<VideoPage> {
+	const innertube = await getBrowseSession();
 	const info = await innertube.getInfo(videoId);
 
 	const related = (info.watch_next_feed ?? [])
@@ -464,22 +416,10 @@ export async function getVideo(videoId: string, cacheDir?: string): Promise<Vide
 		viewCountText: info.basic_info.view_count?.toString() ?? '',
 		publishedText: info.primary_info?.published?.toString() ?? '',
 		thumbnail: bestThumbnail(info.basic_info.thumbnail),
-		isLive: info.basic_info.is_live === true,
+		liveNow: info.basic_info.is_live === true,
 		related
 	};
 }
-
-export type BrowseComment = {
-	commentId: string;
-	author: string;
-	authorThumbnail: string | null;
-	content: string;
-	publishedText: string;
-	likeText: string;
-	replyCount: number;
-	isPinned: boolean;
-	isOwner: boolean;
-};
 
 /**
  * The top comments on a video.
@@ -487,8 +427,8 @@ export type BrowseComment = {
  * Replies are counted but not fetched: a television shows a column of comments
  * to read, not a thread to navigate, and each expansion is another round trip.
  */
-export async function getComments(videoId: string, cacheDir?: string): Promise<BrowseComment[]> {
-	const innertube = await getBrowseSession(cacheDir);
+export async function getComments(videoId: string): Promise<BrowseComment[]> {
+	const innertube = await getBrowseSession();
 	const comments = await innertube.getComments(videoId, 'TOP_COMMENTS');
 
 	const flattened: BrowseComment[] = [];
@@ -537,11 +477,20 @@ const feedCache = new Map<string, ChannelFeed>();
 /** Channels being fetched right now, so two callers wait on one request. */
 const inFlight = new Map<string, Promise<ChannelFeed>>();
 
-async function fetchChannel(
-	channelId: string,
-	kind: FeedKind,
-	cacheDir?: string
-): Promise<ChannelFeed> {
+/** Channels currently being deepened, so a token is spent once. */
+const deepening = new Map<string, Promise<boolean>>();
+
+/** How many videos of one channel are kept, however far anybody scrolls. */
+const MAX_CHANNEL_DEPTH = 400;
+
+/** How far into a feed a request may ask, and how much it may take at once. */
+const MAX_FEED_OFFSET = 2000;
+const MAX_FEED_LIMIT = 120;
+
+/** How many channels are remembered at once, least recently used evicted. */
+const MAX_CACHED_CHANNELS = 600;
+
+async function fetchChannel(channelId: string, kind: FeedKind): Promise<ChannelFeed> {
 	const key = `${kind}:${channelId}`;
 
 	const existing = inFlight.get(key);
@@ -549,7 +498,7 @@ async function fetchChannel(
 
 	const request = (async () => {
 		try {
-			const channel = await getChannel(channelId, cacheDir, kind);
+			const channel = await getChannel(channelId, kind);
 			const loaded: ChannelFeed = {
 				videos: channel.videos.map((video) => ({
 					...video,
@@ -559,6 +508,15 @@ async function fetchChannel(
 				next: channel.continuation,
 				at: Date.now()
 			};
+
+			// Keys are channels somebody asked about, so how many there are is
+			// their decision unless it is made here. The least recently wanted
+			// goes; it costs one scrape to want it again.
+			while (feedCache.size >= MAX_CACHED_CHANNELS) {
+				const coldest = feedCache.keys().next().value;
+				if (coldest === undefined || coldest === key) break;
+				feedCache.delete(coldest);
+			}
 
 			feedCache.set(key, loaded);
 
@@ -598,15 +556,11 @@ function withDeadline(work: Promise<ChannelFeed>, fallback: ChannelFeed): Promis
  * and sixty subscriptions, waiting for every channel to answer would be a
  * minute of blank screen for the sake of the handful that changed.
  */
-async function loadChannel(
-	channelId: string,
-	kind: FeedKind,
-	cacheDir?: string
-): Promise<ChannelFeed> {
+async function loadChannel(channelId: string, kind: FeedKind): Promise<ChannelFeed> {
 	const cached = feedCache.get(`${kind}:${channelId}`);
 
 	if (!cached) {
-		return withDeadline(fetchChannel(channelId, kind, cacheDir), {
+		return withDeadline(fetchChannel(channelId, kind), {
 			videos: [],
 			next: null,
 			at: 0
@@ -614,27 +568,55 @@ async function loadChannel(
 	}
 
 	if (Date.now() - cached.at >= FEED_CACHE_MS) {
-		void fetchChannel(channelId, kind, cacheDir);
+		void fetchChannel(channelId, kind);
 	}
+
+	// Moved to the end, so the channel nobody has asked about in longest is the
+	// one dropped when the cache is full.
+	const key = `${kind}:${channelId}`;
+	feedCache.delete(key);
+	feedCache.set(key, cached);
 
 	return cached;
 }
 
-/** Pulls one more page into a channel's list, if it has one. */
-async function deepenChannel(channel: ChannelFeed): Promise<boolean> {
-	if (!channel.next) return false;
+/**
+ * Pulls one more page into a channel's list, if it has one.
+ *
+ * One at a time per channel: a token is spent on use, so two requests deepening
+ * the same channel at once would have the loser told the token is unknown - and
+ * an unknown token is not the same as a channel with nothing left. Writing that
+ * back would mark a channel exhausted for everybody until its cache expires.
+ */
+async function deepenChannel(key: string, channel: ChannelFeed): Promise<boolean> {
+	const token = channel.next;
+	if (!token) return false;
 
-	const page = await continuePage(channel.next);
+	const already = deepening.get(key);
+	if (already) return already;
 
-	channel.videos = [...channel.videos, ...page.videos];
-	channel.next = page.continuation;
+	const request = (async () => {
+		const page = await continuePage(token);
 
-	return page.videos.length > 0;
+		// Nothing came back and no new token: the page is gone rather than
+		// empty, so leave the channel as it was and let its next refresh
+		// reissue one.
+		if (!page.videos.length && !page.continuation) return false;
+
+		channel.videos = [...channel.videos, ...page.videos].slice(0, MAX_CHANNEL_DEPTH);
+		channel.next = page.continuation;
+
+		return page.videos.length > 0;
+	})().finally(() => deepening.delete(key));
+
+	deepening.set(key, request);
+
+	return request;
 }
 
 /** Live first - it is happening now - then newest to oldest. */
 function byRecency(a: BrowseVideo, b: BrowseVideo): number {
-	if (a.isLive !== b.isLive) return a.isLive ? -1 : 1;
+	if (a.liveNow !== b.liveNow) return a.liveNow ? -1 : 1;
 	return (a.publishedSecondsAgo ?? Infinity) - (b.publishedSecondsAgo ?? Infinity);
 }
 
@@ -676,12 +658,6 @@ function mergeChannels(channels: ChannelFeed[]): BrowseVideo[] {
 	return [...dated, ...dealt];
 }
 
-export type FeedPage = {
-	videos: BrowseVideo[];
-	/** Whether asking for the next offset could return anything. */
-	hasMore: boolean;
-};
-
 /**
  * The newest videos across a set of channels, merged into one list.
  *
@@ -696,27 +672,34 @@ export type FeedPage = {
  */
 export async function getFeed(
 	channelIds: string[],
-	options: { kind?: FeedKind; offset?: number; limit?: number; cacheDir?: string } = {}
+	options: { kind?: FeedKind; offset?: number; limit?: number } = {}
 ): Promise<FeedPage> {
-	const offset = Math.max(0, options.offset ?? 0);
-	const limit = Math.max(1, options.limit ?? 60);
+	// An offset is how far somebody has scrolled, and nobody scrolls past what
+	// is kept. Left unbounded it is instead an instruction to go as deep as
+	// possible in every channel at once - hundreds of fetches for one request,
+	// appended permanently to state everyone shares.
+	const offset = Math.min(Math.max(0, options.offset ?? 0), MAX_FEED_OFFSET);
+	const limit = Math.min(Math.max(1, options.limit ?? 60), MAX_FEED_LIMIT);
 	const kind = options.kind ?? 'videos';
 
 	const queue = [...channelIds];
-	const channels: ChannelFeed[] = [];
+	const loaded: { key: string; channel: ChannelFeed }[] = [];
 
 	const workers = Array.from({ length: Math.min(FEED_CONCURRENCY, queue.length) }, async () => {
 		for (;;) {
 			const channelId = queue.shift();
 			if (!channelId) return;
 
-			channels.push(await loadChannel(channelId, kind, options.cacheDir));
+			loaded.push({
+				key: `${kind}:${channelId}`,
+				channel: await loadChannel(channelId, kind)
+			});
 		}
 	});
 
 	await Promise.all(workers);
 
-	const merged = () => mergeChannels(channels);
+	const merged = () => mergeChannels(loaded.map((entry) => entry.channel));
 
 	let videos = merged();
 
@@ -724,16 +707,16 @@ export async function getFeed(
 	// need them.
 	for (let round = 0; round < FEED_MAX_DEEPENING; round += 1) {
 		if (videos.length >= offset + limit) break;
-		if (!channels.some((channel) => channel.next)) break;
+		if (!loaded.some((entry) => entry.channel.next)) break;
 
-		await Promise.all(channels.map((channel) => deepenChannel(channel)));
+		await Promise.all(loaded.map((entry) => deepenChannel(entry.key, entry.channel)));
 
 		videos = merged();
 	}
 
 	return {
 		videos: videos.slice(offset, offset + limit),
-		hasMore: videos.length > offset + limit || channels.some((channel) => channel.next)
+		hasMore: videos.length > offset + limit || loaded.some((entry) => entry.channel.next)
 	};
 }
 

@@ -1,4 +1,4 @@
-import { continuePage } from '@materialious/shared/browse';
+import { continuePage, BROWSE_CONTRACT_VERSION } from '$lib/server/browse';
 import { error, json } from '@sveltejs/kit';
 
 /**
@@ -18,7 +18,7 @@ export async function GET({ url, locals }) {
 	}
 
 	try {
-		return json(await continuePage(token));
+		return json({ ...(await continuePage(token)), contract: BROWSE_CONTRACT_VERSION });
 	} catch (err) {
 		throw error(502, err instanceof Error ? err.message : 'Could not load more');
 	}
