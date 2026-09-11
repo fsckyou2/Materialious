@@ -1,4 +1,4 @@
-import { getFeed } from '@materialious/shared/browse';
+import { getFeed, BROWSE_CONTRACT_VERSION } from '$lib/server/browse';
 import { error, json } from '@sveltejs/kit';
 
 /**
@@ -40,7 +40,7 @@ export async function POST({ request, locals }) {
 		.slice(0, MAX_CHANNELS);
 
 	if (requested.length === 0) {
-		return json({ videos: [], hasMore: false });
+		return json({ videos: [], hasMore: false, contract: BROWSE_CONTRACT_VERSION });
 	}
 
 	const body_ = body as { offset?: unknown; limit?: unknown; kind?: unknown };

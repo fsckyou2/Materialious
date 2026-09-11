@@ -1,4 +1,4 @@
-import { search } from '@materialious/shared/browse';
+import { search, BROWSE_CONTRACT_VERSION } from '$lib/server/browse';
 import { error, json } from '@sveltejs/kit';
 
 /**
@@ -20,7 +20,7 @@ export async function GET({ url, locals }) {
 	const type = url.searchParams.get('type') === 'channel' ? 'channel' : 'video';
 
 	try {
-		return json(await search(query, type));
+		return json({ ...(await search(query, type)), contract: BROWSE_CONTRACT_VERSION });
 	} catch (err) {
 		throw error(502, err instanceof Error ? err.message : 'Search failed');
 	}

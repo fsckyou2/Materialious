@@ -16,7 +16,7 @@ const SESSION_TTL_MS = 60 * 60 * 1000;
 let cached: { innertube: Innertube; createdAt: number } | undefined;
 let pending: Promise<Innertube> | undefined;
 
-export async function getBrowseSession(cacheDir?: string): Promise<Innertube> {
+export async function getBrowseSession(): Promise<Innertube> {
 	if (cached && Date.now() - cached.createdAt < SESSION_TTL_MS) {
 		return cached.innertube;
 	}
@@ -26,7 +26,7 @@ export async function getBrowseSession(cacheDir?: string): Promise<Innertube> {
 	pending = (async () => {
 		const innertube = await Innertube.create({
 			fetch,
-			cache: new UniversalCache(true, cacheDir),
+			cache: new UniversalCache(true, undefined),
 			user_agent: USER_AGENT
 		});
 

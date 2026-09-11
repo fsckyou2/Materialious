@@ -1,4 +1,4 @@
-import { getVideo } from '@materialious/shared/browse';
+import { getVideo, BROWSE_CONTRACT_VERSION } from '$lib/server/browse';
 import { error, json } from '@sveltejs/kit';
 
 export async function GET({ params, locals }) {
@@ -11,7 +11,7 @@ export async function GET({ params, locals }) {
 	}
 
 	try {
-		return json(await getVideo(params.videoId));
+		return json({ ...(await getVideo(params.videoId)), contract: BROWSE_CONTRACT_VERSION });
 	} catch (err) {
 		throw error(502, err instanceof Error ? err.message : 'Could not load that video');
 	}
