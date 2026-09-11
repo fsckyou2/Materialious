@@ -23,7 +23,13 @@ export async function POST({ request }) {
 		throw error(400, 'A device name is required');
 	}
 
-	const pairing = startPairing(data.data.name, data.data.publicKey ?? null);
+	let pairing: ReturnType<typeof startPairing>;
+	try {
+		pairing = startPairing(data.data.name, data.data.publicKey ?? null);
+	} catch {
+		// Only one thing throws here: too many codes are already outstanding.
+		throw error(503, 'Too many devices are waiting to be paired. Try again shortly.');
+	}
 
 	return json({
 		deviceId: pairing.deviceId,

@@ -121,14 +121,26 @@ export function toBrowseVideo(item: Helpers.YTNode): BrowseVideo | null {
 		const metadata = item.metadata;
 		const rows = metadata?.metadata?.metadata_rows ?? [];
 
+		// A lockup carries its duration, and says whether it is live, in the
+		// badges on its thumbnail rather than in fields of its own.
 		let lengthSeconds = 0;
+		let live = false;
+
 		if (item.content_image?.is(YTNodes.ThumbnailView)) {
 			for (const overlay of item.content_image.overlays ?? []) {
-				if (!overlay.is(YTNodes.ThumbnailBottomOverlayView)) continue;
-				for (const badge of overlay.badges ?? []) {
-					if (badge.is(YTNodes.ThumbnailBadgeView)) {
-						lengthSeconds = secondsFromLabel(badge.text);
+				let badges: { text: string; badge_style: string }[] = [];
+
+				if (overlay.is(YTNodes.ThumbnailBottomOverlayView)) badges = overlay.badges ?? [];
+				else if (overlay.is(YTNodes.ThumbnailOverlayBadgeView)) badges = overlay.badges ?? [];
+
+				for (const badge of badges) {
+					if (badge.badge_style?.includes('LIVE')) {
+						live = true;
+						continue;
 					}
+
+					const seconds = secondsFromLabel(badge.text);
+					if (seconds > 0) lengthSeconds = seconds;
 				}
 			}
 		}
@@ -140,9 +152,6 @@ export function toBrowseVideo(item: Helpers.YTNode): BrowseVideo | null {
 		const authorId =
 			metadata?.image?.renderer_context?.command_context?.on_tap?.payload?.browseId ?? '';
 		const statsRow = authorId ? rows[1] : rows[0];
-
-		// A live lockup says so on its thumbnail rather than in a field.
-		const live = JSON.stringify(item.content_image ?? {}).includes('LIVE');
 
 		return {
 			videoId: item.content_id,
