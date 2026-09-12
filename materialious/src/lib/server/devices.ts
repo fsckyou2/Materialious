@@ -312,6 +312,26 @@ export async function storeSealedMasterKey(
 	return updated > 0;
 }
 
+/**
+ * Forgets a sealed key a television can no longer open, and takes its new one.
+ *
+ * The key is sealed to a keypair the television holds, and a television can
+ * lose that half - its storage cleared, its keystore reset by an update. What
+ * is left on the server then cannot be opened by anybody, while still looking
+ * to a browser like a device that already has a key, so nothing offers to send
+ * one. The television says so itself, with the public key it has now.
+ */
+export async function resealDevice(deviceId: string, publicKey: string): Promise<boolean> {
+	const { DeviceTable } = getSequelize();
+
+	const [updated] = await DeviceTable.update(
+		{ masterKeyCipher: null, publicKey },
+		{ where: { id: deviceId } }
+	);
+
+	return updated > 0;
+}
+
 export async function getSealedMasterKey(deviceId: string): Promise<string | null> {
 	const { DeviceTable } = getSequelize();
 	const device = (await DeviceTable.findByPk(deviceId)) as DeviceModel | null;
