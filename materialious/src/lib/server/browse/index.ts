@@ -555,8 +555,17 @@ const FEED_CONCURRENCY = 24;
 /** How many rounds deeper one request will go looking for older videos. */
 const FEED_MAX_DEEPENING = 3;
 
-/** How long one channel may hold up a feed of a hundred and sixty others. */
-const CHANNEL_TIMEOUT_MS = 10_000;
+/**
+ * How long one channel may hold up a feed of a hundred and sixty others.
+ *
+ * Measured rather than guessed: with nothing cached, the whole request finishes
+ * at whatever this is, because some channel always takes that long - widening
+ * the fetch from eight at a time to twenty-four changed nothing, since the tail
+ * is what everybody waits for. The slow ones keep loading behind the answer and
+ * are in the next one; what this decides is how long somebody stares at a blank
+ * screen the first time after a restart.
+ */
+const CHANNEL_TIMEOUT_MS = 4_000;
 
 type ChannelFeed = {
 	videos: BrowseVideo[];
