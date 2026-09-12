@@ -19,6 +19,16 @@ const SWEEP_INTERVAL_MS = 5 * 60 * 1000;
  */
 const MAX_SESSIONS = 12;
 
+/**
+ * How long setting up a session waits for its own prefetch.
+ *
+ * Long enough that a fast warm-up is folded into the setup, short enough that
+ * a slow one is not something anybody watches happen.
+ */
+const WARM_UP_GRACE_MS = 750;
+
+const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 const sessions = new Map<string, CastSession>();
 const pending = new Map<string, Promise<CastSession>>();
 let sweeper: ReturnType<typeof setInterval> | undefined;
@@ -92,7 +102,14 @@ export async function createCastSession(
 		sessions.set(id, session);
 		startSweeper();
 
-		await session.warmUp();
+		// Warming up fetches the first audio segment, which is worth having
+		// before a receiver asks for it - but it is a prefetch, and waiting for
+		// it was several seconds of a viewer looking at a still screen with
+		// nothing to show for it. It is given a moment to finish and then left
+		// to finish on its own: whoever asks first either finds it done or does
+		// the same fetch themselves.
+		const warm = session.warmUp().catch(() => undefined);
+		await Promise.race([warm, delay(WARM_UP_GRACE_MS)]);
 
 		return session;
 	})();
