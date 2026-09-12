@@ -15,11 +15,12 @@ import { createHash } from 'node:crypto';
 const SPONSORBLOCK = env.PUBLIC_DEFAULT_SPONSERBLOCK_INSTANCE || 'https://sponsor.ajay.app';
 
 /**
- * What is skipped by default.
+ * Every kind of segment SponsorBlock knows about.
  *
- * Everything here is an interruption to what the viewer chose to watch.
- * "filler" - tangents and jokes - is part of the video rather than an
- * interruption to it, so it is not asked for.
+ * All of them are asked for and all of them are returned: which ones are worth
+ * skipping is a decision for the screen in front of the viewer, not for this
+ * instance, and asking for the lot means one cached answer serves a device
+ * whatever it has been set to skip.
  */
 const CATEGORIES = [
 	'sponsor',
@@ -28,7 +29,8 @@ const CATEGORIES = [
 	'intro',
 	'outro',
 	'preview',
-	'music_offtopic'
+	'music_offtopic',
+	'filler'
 ];
 
 /** How long a video's segments are worth keeping. They change slowly. */
