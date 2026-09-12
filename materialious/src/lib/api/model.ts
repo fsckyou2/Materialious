@@ -246,6 +246,9 @@ export interface PlaylistPage extends Omit<Playlist, 'videos'> {
 	updated: number;
 	isListed: boolean;
 	videos: PlaylistPageVideo[];
+	// YouTube's generated mixes never end; they are extended as they are watched.
+	// Anything that reads a playlist to completion has to stop short of one.
+	isInfinite?: boolean;
 	getContinuation?: () => Promise<PlaylistPage>;
 }
 

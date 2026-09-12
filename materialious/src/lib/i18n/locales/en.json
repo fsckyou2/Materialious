@@ -127,7 +127,8 @@
 		"previous": "Previous",
 		"cloneToPlaylist": "Clone to playlist",
 		"cloning": "Cloning...",
-		"clonedSuccess": "Playlist cloned successfully"
+		"clonedSuccess": "Playlist cloned successfully",
+		"failedToLoad": "This playlist could not be loaded"
 	},
 	"thumbnail": {
 		"live": "LIVE",

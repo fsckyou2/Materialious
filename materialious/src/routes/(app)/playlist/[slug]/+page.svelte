@@ -20,11 +20,20 @@
 	let { data = $bindable() }: { data: any } = $props();
 	let loaded = $state(false);
 	let playlist: any = $state(null);
+	let loadFailed = $state(false);
 
-	data.streamed.details?.then((result: any) => {
-		playlist = result;
-		loaded = true;
-	});
+	data.streamed.details
+		?.then((result: any) => {
+			playlist = result;
+			loaded = true;
+		})
+		// Without this the rejection goes unhandled and the page sits on its loading
+		// state for good, which is how a playlist that cannot be viewed at all, such
+		// as one of YouTube's generated mixes, presents: blank, with no explanation.
+		.catch(() => {
+			loadFailed = true;
+			loaded = true;
+		});
 
 	async function loadLastWatched() {
 		const videoIds = playlist.videos.map((video: any) => video.videoId);
@@ -70,9 +79,15 @@
 
 {#if !loaded}
 	<PageLoading />
+{:else if loadFailed}
+<article class="border padding">
+	<p>{$_('playlist.failedToLoad')}</p>
+</article>
 {:else}
 <article class="border padding">
-	{#if playlist.videos.length > 0}
+	<!-- Play all resumes by walking every video, and shuffle draws from the whole
+	list; neither means anything on a mix, which YouTube extends indefinitely. -->
+	{#if playlist.videos.length > 0 && !playlist.info.isInfinite}
 		<nav>
 			<button onclick={loadLastWatched} class="button circle extra no-margin">
 				<i>play_arrow</i>
