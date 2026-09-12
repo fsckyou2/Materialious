@@ -541,8 +541,16 @@ export async function getComments(videoId: string): Promise<BrowseComment[]> {
 /** How long a channel's videos are served for before being fetched again. */
 const FEED_CACHE_MS = 30 * 60 * 1000;
 
-/** How many channels are fetched at once. */
-const FEED_CONCURRENCY = 8;
+/**
+ * How many channels are fetched at once.
+ *
+ * Only a feed with nothing cached pays this: a warm one is served from memory
+ * and refreshed behind, and a stale one the same. But an instance that has just
+ * restarted has nothing, and a hundred and sixty channels eight at a time is
+ * twenty rounds of waiting - ten seconds of blank screen for somebody who just
+ * turned the television on.
+ */
+const FEED_CONCURRENCY = 24;
 
 /** How many rounds deeper one request will go looking for older videos. */
 const FEED_MAX_DEEPENING = 3;
