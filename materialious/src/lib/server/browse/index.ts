@@ -567,6 +567,9 @@ const FEED_MAX_DEEPENING = 3;
  */
 const CHANNEL_TIMEOUT_MS = 4_000;
 
+/** How long a feed waits for channels it has nothing cached for. */
+const FEED_FIRST_PAINT_MS = 2_500;
+
 type ChannelFeed = {
 	videos: BrowseVideo[];
 	/** Token for this channel's next page, or null once it is exhausted. */
@@ -799,26 +802,44 @@ export async function getFeed(
 		}
 	});
 
-	await Promise.all(workers);
+	// Cached channels answer at once and the rest are a scrape each, so a feed
+	// with nothing behind it is a hundred and sixty scrapes deep - eight seconds
+	// measured, whether they run eight at a time or twenty-four. Rather than
+	// hold the screen blank for all of them, the answer goes out with whatever
+	// has arrived; the rest carry on filling the cache and are in the next one,
+	// which is a second away rather than eight.
+	await Promise.race([
+		Promise.all(workers),
+		new Promise((resolve) => {
+			setTimeout(resolve, FEED_FIRST_PAINT_MS).unref?.();
+		})
+	]);
 
-	const merged = () => mergeChannels(loaded.map((entry) => entry.channel));
+	const answered = [...loaded];
+	const partial = answered.length < channelIds.length;
+
+	const merged = () => mergeChannels(answered.map((entry) => entry.channel));
 
 	let videos = merged();
 
 	// Only go looking for older videos when somebody has scrolled far enough to
-	// need them.
-	for (let round = 0; round < FEED_MAX_DEEPENING; round += 1) {
+	// need them - and never while channels are still arriving, since that is
+	// digging deeper into a hole that is still being filled in.
+	for (let round = 0; !partial && round < FEED_MAX_DEEPENING; round += 1) {
 		if (videos.length >= offset + limit) break;
-		if (!loaded.some((entry) => entry.channel.next)) break;
+		if (!answered.some((entry) => entry.channel.next)) break;
 
-		await Promise.all(loaded.map((entry) => deepenChannel(entry.key, entry.channel)));
+		await Promise.all(answered.map((entry) => deepenChannel(entry.key, entry.channel)));
 
 		videos = merged();
 	}
 
 	return {
 		videos: videos.slice(offset, offset + limit),
-		hasMore: videos.length > offset + limit || loaded.some((entry) => entry.channel.next)
+		hasMore: videos.length > offset + limit || answered.some((entry) => entry.channel.next),
+		// Says this is what had arrived in time, not everything there is: a
+		// client that asks again shortly gets the rest.
+		partial
 	};
 }
 

@@ -163,4 +163,12 @@ export type FeedPage = {
 	videos: BrowseVideo[];
 	/** Whether asking for the next offset could return anything. */
 	hasMore: boolean;
+	/**
+	 * Whether some channels had not answered in time to be in this.
+	 *
+	 * They are still being fetched, so asking again shortly returns the lot. A
+	 * device that shows this feed can use it to come back rather than leaving a
+	 * viewer looking at a feed quietly missing a few channels.
+	 */
+	partial: boolean;
 };
