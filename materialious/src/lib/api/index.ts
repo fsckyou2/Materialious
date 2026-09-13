@@ -59,6 +59,7 @@ import {
 	getSubscriptionsBackend,
 	postSubscribeBackend
 } from './backend/subscriptions';
+import { getFeedFromInstance } from './backend/feed';
 import { getFeedInvidious, getPopularInvidious, getSubscriptionsInvidious } from './invidious/feed';
 import { getResolveUrlInvidious } from './invidious/misc';
 import { getVideoInvidious } from './invidious/video';
@@ -249,6 +250,13 @@ export async function getFeed(
 	fetchOptions: RequestInit = {}
 ): Promise<Feed> {
 	if (isYTBackend()) {
+		// An instance of our own builds this feed better than a browser can:
+		// every channel every time rather than a few per cooldown, ordered by
+		// when things were actually published, with lengths and live badges
+		// that RSS does not carry. Falling back covers everything else.
+		const fromInstance = await getFeedFromInstance(maxResults, page);
+		if (fromInstance) return fromInstance;
+
 		return getFeedYTjs(maxResults, page);
 	}
 
