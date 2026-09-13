@@ -171,4 +171,13 @@ export type FeedPage = {
 	 * viewer looking at a feed quietly missing a few channels.
 	 */
 	partial: boolean;
+	/**
+	 * Channels that were asked for and gave nothing back.
+	 *
+	 * Empty is the normal case. A channel appears here when it could not be
+	 * fetched at all - deleted, renamed to something this account never
+	 * updated, or simply refusing today - which is otherwise indistinguishable
+	 * from a channel that has not posted in a while.
+	 */
+	unavailable: string[];
 };
