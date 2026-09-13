@@ -276,6 +276,13 @@ export type Notification = VideoBase;
 export interface Feed {
 	notifications: Notification[];
 	videos: Video[];
+	/**
+	 * Some channels had not answered in time to be in this.
+	 *
+	 * Only an instance of our own says this, and only while it is still
+	 * gathering: asking again shortly brings back the rest.
+	 */
+	partial?: boolean;
 }
 
 export interface Subscription {
