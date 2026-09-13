@@ -654,13 +654,19 @@ export function recentChannelFailures(): ChannelFailure[] {
 /**
  * Whether a channel failed in a way that will still be true next time.
  *
- * A deleted or terminated channel says so; anything else - a browse endpoint
- * answering 400, a connection that went nowhere - is worth another go, because
- * most of them work on the second attempt.
+ * YouTube says so in prose rather than in a code, and it has several ways of
+ * saying it - the one that turned up in practice was "This channel was removed
+ * because it violated our Community Guidelines", which none of the obvious
+ * words match. Anything else - a browse endpoint answering 400, a connection
+ * that went nowhere - is worth another go, because most of those work on the
+ * second attempt.
  */
 function isGone(error: unknown): boolean {
 	const message = error instanceof Error ? error.message : String(error);
-	return /does not exist|terminated|unavailable|not found/i.test(message);
+
+	return /does not exist|terminated|removed|violated|suspended|unavailable|not found/i.test(
+		message
+	);
 }
 
 async function fetchWithOneRetry(channelId: string, kind: FeedKind) {
