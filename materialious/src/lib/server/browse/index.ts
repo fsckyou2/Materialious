@@ -682,6 +682,13 @@ type ChannelFeed = {
 	/** Token for this channel's next page, or null once it is exhausted. */
 	next: string | null;
 	at: number;
+	/**
+	 * Set when this is the empty answer left behind by a failed fetch.
+	 *
+	 * A channel with nothing in it and a channel that could not be read are
+	 * both an empty list, and only one of them is worth telling anybody about.
+	 */
+	failed?: true;
 };
 
 const feedCache = new Map<string, ChannelFeed>();
@@ -772,7 +779,8 @@ async function fetchChannel(channelId: string, kind: FeedKind): Promise<ChannelF
 			const failed: ChannelFeed = {
 				videos: [],
 				next: null,
-				at: permanent ? Date.now() : Date.now() - FEED_CACHE_MS + FAILED_CHANNEL_RETRY_MS
+				at: permanent ? Date.now() : Date.now() - FEED_CACHE_MS + FAILED_CHANNEL_RETRY_MS,
+				failed: true
 			};
 
 			feedCache.set(key, failed);
@@ -967,11 +975,11 @@ export async function getFeed(
 	const answered = [...loaded];
 	const partial = answered.length < channelIds.length;
 
-	// Channels that answered with nothing because the fetch failed. A feed
-	// quietly missing a channel is hard to tell from a channel that has not
-	// posted, and only this end knows which it is.
+	// Channels that could not be read at all - not channels that simply have
+	// nothing in this tab, which look identical from the outside and are not
+	// worth telling anybody about.
 	const unavailable = answered
-		.filter((entry) => entry.channel.videos.length === 0 && entry.channel.next === null)
+		.filter((entry) => entry.channel.failed === true)
 		.map((entry) => entry.key.slice(entry.key.indexOf(':') + 1));
 
 	const merged = () => mergeChannels(answered.map((entry) => entry.channel));
