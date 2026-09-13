@@ -570,6 +570,9 @@ const CHANNEL_TIMEOUT_MS = 4_000;
 /** How long a feed waits for channels it has nothing cached for. */
 const FEED_FIRST_PAINT_MS = 2_500;
 
+/** How long a channel that failed is left alone before being tried again. */
+const FAILED_CHANNEL_RETRY_MS = 2 * 60 * 1000;
+
 type ChannelFeed = {
 	videos: BrowseVideo[];
 	/** Token for this channel's next page, or null once it is exhausted. */
@@ -627,8 +630,25 @@ async function fetchChannel(channelId: string, kind: FeedKind): Promise<ChannelF
 
 			return loaded;
 		} catch {
-			// One unreachable channel should not empty the whole feed.
-			return feedCache.get(key) ?? { videos: [], next: null, at: Date.now() };
+			// One unreachable channel should not empty the whole feed - nor
+			// should it be asked again from scratch by every request after
+			// this one. A channel that fails is remembered as empty, but
+			// backdated so it falls stale in a couple of minutes and is tried
+			// again behind somebody rather than in front of them. Without this
+			// a handful of dead channels out of a hundred and sixty means every
+			// feed waits the full budget, for ever.
+			const remembered = feedCache.get(key);
+			if (remembered) return remembered;
+
+			const failed: ChannelFeed = {
+				videos: [],
+				next: null,
+				at: Date.now() - FEED_CACHE_MS + FAILED_CHANNEL_RETRY_MS
+			};
+
+			feedCache.set(key, failed);
+
+			return failed;
 		} finally {
 			inFlight.delete(key);
 		}
