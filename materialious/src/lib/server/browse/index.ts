@@ -1,4 +1,4 @@
-import { YTNodes, type Helpers } from 'youtubei.js';
+import { YTNodes, type Helpers, type Innertube } from 'youtubei.js';
 import type {
 	BrowseChannel,
 	BrowseComment,
@@ -379,12 +379,52 @@ export async function search(
 	return { videos, channels, playlists, continuation: keepPage(results as unknown as FeedLike) };
 }
 
+/**
+ * A channel id as YouTube writes them. Anything else is a name of some kind.
+ *
+ * Subscriptions can carry an @handle or one of the older `c/` and `user/`
+ * forms - imported from elsewhere, or subscribed to before YouTube settled on
+ * one shape - and asking the browse endpoint for one of those is simply an
+ * error, so those channels were absent from every feed with nothing said.
+ */
+const CHANNEL_ID = /^UC[\w-]{22}$/;
+
+/** Names already looked up, so the extra request happens once per name. */
+const resolvedIds = new Map<string, string>();
+
+/** How many looked-up names are remembered. Anything more is somebody's list. */
+const MAX_RESOLVED_IDS = 500;
+
+async function resolveChannelId(innertube: Innertube, id: string): Promise<string> {
+	if (CHANNEL_ID.test(id)) return id;
+
+	const known = resolvedIds.get(id);
+	if (known) return known;
+
+	const path = id.startsWith('@') || id.includes('/') ? id : `@${id}`;
+	const resolved = await innertube.resolveURL(`https://www.youtube.com/${path}`);
+	const browseId = (resolved?.payload as { browseId?: string } | undefined)?.browseId;
+
+	if (!browseId) throw new Error(`Could not resolve channel ${id}`);
+
+	while (resolvedIds.size >= MAX_RESOLVED_IDS) {
+		const oldest = resolvedIds.keys().next().value;
+		if (oldest === undefined) break;
+		resolvedIds.delete(oldest);
+	}
+
+	resolvedIds.set(id, browseId);
+
+	return browseId;
+}
+
 export async function getChannel(
 	channelId: string,
 	kind: FeedKind = 'videos'
 ): Promise<ChannelPage> {
 	const innertube = await getBrowseSession();
-	const channel = await innertube.getChannel(channelId);
+	const id = await resolveChannelId(innertube, channelId);
+	const channel = await innertube.getChannel(id);
 
 	let videos: BrowseVideo[] = [];
 	let playlists: BrowsePlaylist[] = [];
@@ -573,6 +613,35 @@ const FEED_FIRST_PAINT_MS = 2_500;
 /** How long a channel that failed is left alone before being tried again. */
 const FAILED_CHANNEL_RETRY_MS = 2 * 60 * 1000;
 
+/** How long to wait before giving a channel that failed a second chance. */
+const CHANNEL_RETRY_MS = 400;
+
+/**
+ * Whether a channel failed in a way that will still be true next time.
+ *
+ * A deleted or terminated channel says so; anything else - a browse endpoint
+ * answering 400, a connection that went nowhere - is worth another go, because
+ * most of them work on the second attempt.
+ */
+function isGone(error: unknown): boolean {
+	const message = error instanceof Error ? error.message : String(error);
+	return /does not exist|terminated|unavailable|not found/i.test(message);
+}
+
+async function fetchWithOneRetry(channelId: string, kind: FeedKind) {
+	try {
+		return await getChannel(channelId, kind);
+	} catch (error) {
+		if (isGone(error)) throw error;
+
+		await new Promise((resolve) => {
+			setTimeout(resolve, CHANNEL_RETRY_MS).unref?.();
+		});
+
+		return getChannel(channelId, kind);
+	}
+}
+
 type ChannelFeed = {
 	videos: BrowseVideo[];
 	/** Token for this channel's next page, or null once it is exhausted. */
@@ -606,7 +675,7 @@ async function fetchChannel(channelId: string, kind: FeedKind): Promise<ChannelF
 
 	const request = (async () => {
 		try {
-			const channel = await getChannel(channelId, kind);
+			const channel = await fetchWithOneRetry(channelId, kind);
 			const loaded: ChannelFeed = {
 				videos: channel.videos.map((video) => ({
 					...video,
@@ -629,7 +698,7 @@ async function fetchChannel(channelId: string, kind: FeedKind): Promise<ChannelF
 			feedCache.set(key, loaded);
 
 			return loaded;
-		} catch {
+		} catch (error) {
 			// One unreachable channel should not empty the whole feed - nor
 			// should it be asked again from scratch by every request after
 			// this one. A channel that fails is remembered as empty, but
@@ -640,10 +709,24 @@ async function fetchChannel(channelId: string, kind: FeedKind): Promise<ChannelF
 			const remembered = feedCache.get(key);
 			if (remembered) return remembered;
 
+			// A channel YouTube says is gone is not coming back, so it is
+			// remembered for as long as anything else; one that merely failed
+			// is tried again in a couple of minutes.
+			const permanent = isGone(error);
+
+			// Said out loud, because a channel that silently contributes
+			// nothing to every feed is invisible from the outside: the only
+			// symptom is a feed that is quietly short, and the only place the
+			// reason exists is here.
+			console.warn(
+				`browse: ${kind} for ${channelId} failed${permanent ? ' for good' : ''}:`,
+				error instanceof Error ? error.message : error
+			);
+
 			const failed: ChannelFeed = {
 				videos: [],
 				next: null,
-				at: Date.now() - FEED_CACHE_MS + FAILED_CHANNEL_RETRY_MS
+				at: permanent ? Date.now() : Date.now() - FEED_CACHE_MS + FAILED_CHANNEL_RETRY_MS
 			};
 
 			feedCache.set(key, failed);
@@ -838,6 +921,13 @@ export async function getFeed(
 	const answered = [...loaded];
 	const partial = answered.length < channelIds.length;
 
+	// Channels that answered with nothing because the fetch failed. A feed
+	// quietly missing a channel is hard to tell from a channel that has not
+	// posted, and only this end knows which it is.
+	const unavailable = answered
+		.filter((entry) => entry.channel.videos.length === 0 && entry.channel.next === null)
+		.map((entry) => entry.key.slice(entry.key.indexOf(':') + 1));
+
 	const merged = () => mergeChannels(answered.map((entry) => entry.channel));
 
 	let videos = merged();
@@ -859,7 +949,8 @@ export async function getFeed(
 		hasMore: videos.length > offset + limit || answered.some((entry) => entry.channel.next),
 		// Says this is what had arrived in time, not everything there is: a
 		// client that asks again shortly gets the rest.
-		partial
+		partial,
+		unavailable
 	};
 }
 
