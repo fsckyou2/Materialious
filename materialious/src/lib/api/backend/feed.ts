@@ -58,21 +58,12 @@ export async function getFeedFromInstance(maxResults: number, page: number): Pro
 		partial?: boolean;
 	};
 
-	// Some channels had not answered in time and are still being fetched. Ask
-	// again in a moment, unwatched: by the time anybody scrolls or comes back,
-	// the instance has the lot.
-	if (answered.partial) {
-		setTimeout(() => void ask().catch(() => undefined), PARTIAL_REFRESH_MS);
-	}
-
 	return {
 		notifications: [],
-		videos: (answered.videos ?? []).map(toVideo)
+		videos: (answered.videos ?? []).map(toVideo),
+		partial: answered.partial === true
 	};
 }
-
-/** How long to leave the instance to finish before asking again. */
-const PARTIAL_REFRESH_MS = 3000;
 
 /** One video, as the instance's browse endpoints describe it. */
 type InstanceVideo = {
