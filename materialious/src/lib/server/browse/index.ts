@@ -616,6 +616,41 @@ const FAILED_CHANNEL_RETRY_MS = 2 * 60 * 1000;
 /** How long to wait before giving a channel that failed a second chance. */
 const CHANNEL_RETRY_MS = 400;
 
+/** One channel that could not be fetched, and what it said. */
+export type ChannelFailure = {
+	channelId: string;
+	kind: FeedKind;
+	reason: string;
+	/** Whether YouTube said the channel is gone, rather than merely failing. */
+	permanent: boolean;
+	at: string;
+};
+
+/** How many recent failures are kept for somebody to look at. */
+const MAX_REMEMBERED_FAILURES = 100;
+
+const failures = new Map<string, ChannelFailure>();
+
+function rememberFailure(failure: ChannelFailure): void {
+	const key = `${failure.kind}:${failure.channelId}`;
+
+	// One entry per channel: the latest reason is the interesting one, and a
+	// channel that fails hourly should not crowd out the rest.
+	failures.delete(key);
+	failures.set(key, failure);
+
+	while (failures.size > MAX_REMEMBERED_FAILURES) {
+		const oldest = failures.keys().next().value;
+		if (oldest === undefined) break;
+		failures.delete(oldest);
+	}
+}
+
+/** The channels that have failed since this instance started, newest last. */
+export function recentChannelFailures(): ChannelFailure[] {
+	return [...failures.values()];
+}
+
 /**
  * Whether a channel failed in a way that will still be true next time.
  *
@@ -717,11 +752,22 @@ async function fetchChannel(channelId: string, kind: FeedKind): Promise<ChannelF
 			// Said out loud, because a channel that silently contributes
 			// nothing to every feed is invisible from the outside: the only
 			// symptom is a feed that is quietly short, and the only place the
-			// reason exists is here.
+			// reason exists is here. Kept as well as logged, since reading a
+			// container's log is not something everybody running this can do.
+			const reason = error instanceof Error ? error.message : String(error);
+
 			console.warn(
 				`browse: ${kind} for ${channelId} failed${permanent ? ' for good' : ''}:`,
-				error instanceof Error ? error.message : error
+				reason
 			);
+
+			rememberFailure({
+				channelId,
+				kind,
+				reason,
+				permanent,
+				at: new Date().toISOString()
+			});
 
 			const failed: ChannelFeed = {
 				videos: [],
