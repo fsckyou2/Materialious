@@ -1,5 +1,5 @@
 import { YT, YTNodes } from 'youtubei.js';
-import { getInnertube } from '.';
+import { getChannelCached } from './channelCache';
 import type {
 	ChannelContent,
 	ChannelContentPlaylists,
@@ -15,9 +15,7 @@ import { invidiousItemSchema } from './schema';
 import { associateAvatar } from '$lib/thumbnail';
 
 export async function getChannelYTjs(channelId: string): Promise<ChannelPage> {
-	const innertube = await getInnertube();
-
-	const innerResults = await innertube.getChannel(channelId);
+	const innerResults = await getChannelCached(channelId);
 
 	let authorBanners: Image[] = [];
 	if (
@@ -216,9 +214,7 @@ export async function getChannelContentYTjs(
 	channelId: string,
 	options: ChannelOptions
 ): Promise<ChannelContent> {
-	const innertube = await getInnertube();
-
-	const channel = await innertube.getChannel(channelId);
+	const channel = await getChannelCached(channelId);
 
 	const author = channel.metadata.title ?? '';
 
