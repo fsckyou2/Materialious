@@ -51,6 +51,7 @@
 
 	let playerElement: HTMLMediaElement | undefined = $state();
 	let loaded = $state(false);
+	let loadFailed = $state(false);
 
 	let comments: Comments | null = $state(null);
 	let commentSort: 'top' | 'new' = $state('top');
@@ -141,6 +142,13 @@
 				}
 			}, 60000);
 		}
+	});
+
+	// Nothing handled a failure here, so a page whose video could not be fetched
+	// sat on its spinner with nothing said and nothing offered.
+	pageStream?.catch(() => {
+		pageSettled();
+		loadFailed = true;
 	});
 
 	playerStream?.then(async (playerResult: any) => {
@@ -318,7 +326,14 @@
 	{/if}
 </svelte:head>
 
-{#if !loaded}
+{#if loadFailed}
+<article class="border padding">
+	<p>{$_('player.failedToLoad')}</p>
+	<nav>
+		<button onclick={() => location.reload()}>{$_('player.tryAgain')}</button>
+	</nav>
+</article>
+{:else if !loaded}
 	<PageLoading />
 {:else}
 <div class="grid no-padding">
