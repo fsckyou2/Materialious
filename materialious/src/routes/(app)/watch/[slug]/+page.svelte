@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
+	import { watchForStall } from '$lib/diagnostics/stallWatch';
 	import {
 		getComments
 	} from '$lib/api/index';
@@ -109,7 +110,12 @@
 	const playerStream = data.streamed.player;
 	const pageStream = data.streamed.page;
 
+	// Watching a video is where a stall is most often noticed, so say what the
+	// page was still waiting for if it never arrives.
+	const pageSettled = watchForStall({ phase: 'watch', id: page.params.slug });
+
 	pageStream?.then((pageResult: any) => {
+		pageSettled();
 		data = pageResult;
 		loaded = true;
 		playerLoadingStore.set(true);

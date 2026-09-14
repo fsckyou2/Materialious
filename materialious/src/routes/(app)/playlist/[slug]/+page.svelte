@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
+	import { watchForStall } from '$lib/diagnostics/stallWatch';
 	import { unsafeRandomItem } from '$lib/misc';
 	import { cleanNumber } from '$lib/numbers';
 	import {
@@ -22,8 +23,11 @@
 	let playlist: any = $state(null);
 	let loadFailed = $state(false);
 
+	const detailsSettled = watchForStall({ phase: 'playlist', id: page.params.slug });
+
 	data.streamed.details
 		?.then((result: any) => {
+			detailsSettled();
 			playlist = result;
 			loaded = true;
 		})
@@ -31,6 +35,7 @@
 		// state for good, which is how a playlist that cannot be viewed at all, such
 		// as one of YouTube's generated mixes, presents: blank, with no explanation.
 		.catch(() => {
+			detailsSettled();
 			loadFailed = true;
 			loaded = true;
 		});

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
+	import { watchForStall } from '$lib/diagnostics/stallWatch';
 	import { getBestThumbnail } from '$lib/images';
 	import { videoLength } from '$lib/numbers';
 	import { generateChapterWebVTT, type ParsedDescription } from '$lib/description';
@@ -271,7 +272,22 @@
 
 		setupSponsorSkip();
 
+		// A player that never reaches its media is the stall people describe as
+		// spinning forever. Report what it was waiting for, and where it got to.
+		const playbackStarted = watchForStall({
+			phase: 'playback',
+			id: data.video.videoId,
+			detail: () => ({
+				readyState: playerElement?.readyState,
+				buffered: playerElement?.buffered.length ? playerElement.buffered.end(0) : 0,
+				variants: player?.getVariantTracks?.().length,
+				mediaError: playerElement?.error?.code ?? null,
+				usingSabr: !!sabrAdapter
+			})
+		});
+
 		player.addEventListener('loaded', () => {
+			playbackStarted();
 			restoreQualityPreference(player);
 			restoreDefaultLanguage(player);
 			updateVideoPlayerHeight();
