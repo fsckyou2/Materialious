@@ -118,6 +118,7 @@
 
 	let player: shaka.Player;
 	let sabrAdapter: SabrStreamingAdapter | null;
+	let lastPlayerError: string | null = null;
 
 	let androidInitialNetworkStatus: ConnectionStatus | undefined;
 	let androidOriginalOrigination: ScreenOrientationResult | undefined;
@@ -282,7 +283,14 @@
 				buffered: playerElement?.buffered.length ? playerElement.buffered.end(0) : 0,
 				variants: player?.getVariantTracks?.().length,
 				mediaError: playerElement?.error?.code ?? null,
-				usingSabr: !!sabrAdapter
+				usingSabr: !!sabrAdapter,
+				playerError: lastPlayerError,
+				// A player with nothing to choose from was handed a manifest with
+				// nothing in it, which is a failure of extraction rather than of
+				// playback. These say which.
+				formats: data.video.adaptiveFormats?.length ?? null,
+				hasDash: !!data.video.dashUrl,
+				hasHls: !!data.video.hlsUrl
 			})
 		});
 
@@ -509,6 +517,10 @@
 
 		player?.addEventListener('error', (event) => {
 			const error = (event as CustomEvent).detail as shaka.util.Error;
+			// Held so that a stall report can say what the player last complained
+			// about; on its own this only reaches the console, where nobody is
+			// looking when it happens.
+			lastPlayerError = `${error?.code}/${error?.category}`;
 			console.error('Player error:', error);
 		});
 
