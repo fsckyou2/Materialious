@@ -78,9 +78,13 @@
 						thumbnail.timestamp !== null &&
 						(thumbnail.locked || thumbnail.votes > 0 || !thumbnail.original)
 					) {
-						thumbnailSrc = await getThumbnailDeArrow(video.videoId, thumbnail.timestamp, {
+						const replacement = await getThumbnailDeArrow(video.videoId, thumbnail.timestamp, {
 							priority: 'low'
 						});
+
+						// Nothing to show means the video keeps the thumbnail it came with.
+						if (replacement) thumbnailSrc = replacement;
+
 						break;
 					}
 				}
