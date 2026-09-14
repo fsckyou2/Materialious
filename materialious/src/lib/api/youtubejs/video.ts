@@ -1,4 +1,5 @@
 import { androidPoTokenMinter } from '$lib/android/youtube/minter';
+import { getChannelCached } from './channelCache';
 import type {
 	AdaptiveFormats,
 	Captions,
@@ -70,7 +71,7 @@ export async function getVideoPageYTjs(videoId: string): Promise<VideoPlay> {
 
 	let authorThumbnails: Image[];
 	if (video.basic_info.channel_id) {
-		const channel = await innertube.getChannel(video.basic_info.channel_id);
+		const channel = await getChannelCached(video.basic_info.channel_id);
 		authorThumbnails = channel.metadata.avatar as Image[];
 		await associateAvatar(video.basic_info.channel_id, authorThumbnails);
 	} else {

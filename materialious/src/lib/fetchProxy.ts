@@ -2,6 +2,7 @@ import { isUnrestrictedPlatform, timeout } from '$lib/misc';
 import { Capacitor } from '@capacitor/core';
 import sodium from 'libsodium-wrappers-sumo';
 import { BASE64_BODY_HEADER, isOwnBackend } from './shared';
+import { requestSettled, requestStarted } from './diagnostics/pendingRequests';
 
 export const originalFetch = window.fetch;
 export const corsProxyUrl =
@@ -84,8 +85,17 @@ export const fetchProxied = async (
 		}
 	}
 
-	// Use the original fetch with the proxied URL and options
-	return originalFetch(requestInput, requestOptions);
+	// Held while the request is outstanding, so that a page which stops making
+	// progress can say what it is still waiting for.
+	const pendingId = requestStarted(
+		requestInput instanceof Request ? requestInput.url : requestInput.toString()
+	);
+
+	try {
+		return await originalFetch(requestInput, requestOptions);
+	} finally {
+		requestSettled(pendingId);
+	}
 };
 
 if (isUnrestrictedPlatform() && Capacitor.getPlatform() !== 'electron') {
