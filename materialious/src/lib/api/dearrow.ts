@@ -10,6 +10,10 @@ export async function getDeArrow(videoId: string, fetchOptions?: RequestInit): P
 	return await resp.json();
 }
 
+/**
+ * Returns an empty string when there is no thumbnail to show, which callers
+ * should read as "keep the one you have".
+ */
 export async function getThumbnailDeArrow(
 	videoId: string,
 	time: number,
@@ -21,5 +25,14 @@ export async function getThumbnailDeArrow(
 			fetchOptions
 		)
 	);
-	return URL.createObjectURL(await resp.blob());
+
+	// The service answers 204 when it has nothing to give, which is a success and
+	// so passes the check above. Making a blob URL out of the empty body hands
+	// back something that looks like a thumbnail and renders as nothing.
+	if (resp.status === 204) return '';
+
+	const thumbnail = await resp.blob();
+	if (thumbnail.size === 0) return '';
+
+	return URL.createObjectURL(thumbnail);
 }
