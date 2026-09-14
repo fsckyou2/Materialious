@@ -164,19 +164,39 @@ async function proxyRequest(
 		}
 	}
 
+	// Upstream occasionally hangs rather than being slow: a call that usually
+	// answers in well under a second sits there until the timeout, and the page
+	// waiting on it has nothing to show for the wait. A second attempt opens a
+	// fresh connection and normally answers at once. A request that timed out
+	// received nothing, so there is nothing that asking again could repeat, and
+	// the body is held in memory by this point and can be sent twice.
+	const attempts = 2;
+
 	let response: Response | undefined;
 	let errorMsg = '';
-	try {
-		response = await fetch(urlToProxyObj.toString(), {
-			...requestOptions,
-			body,
-			signal: AbortSignal.timeout(10000),
-			// @ts-expect-error Node-specific option
-			dispatcher
-		});
-	} catch (err) {
-		errorMsg = (err as any).toString();
-		console.warn('Proxy failed with error: ', errorMsg);
+
+	for (let attempt = 1; attempt <= attempts; attempt++) {
+		try {
+			response = await fetch(urlToProxyObj.toString(), {
+				...requestOptions,
+				body,
+				signal: AbortSignal.timeout(10000),
+				// @ts-expect-error Node-specific option
+				dispatcher
+			});
+			errorMsg = '';
+			break;
+		} catch (err) {
+			errorMsg = (err as any).toString();
+
+			if ((err as any)?.name === 'TimeoutError' && attempt < attempts) {
+				console.warn('Proxy timed out, asking once more: ', urlToProxyObj.host);
+				continue;
+			}
+
+			console.warn('Proxy failed with error: ', errorMsg);
+			break;
+		}
 	}
 
 	if (!response || errorMsg) {
