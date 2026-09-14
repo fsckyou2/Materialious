@@ -3,13 +3,15 @@ WORKDIR /app
 
 COPY . .
 
-RUN npm ci
-
 # Tell SvelteKit to use node adapter.
 ENV PUBLIC_BUILD_WITH_BACKEND="true"
 
-RUN npm run build
-RUN npm prune --omit=dev
+# Installing, building and pruning in one step keeps the dependencies in the
+# layer that pruning removes them from. Split across layers, pruning has to
+# rename files that live in a layer below it, and overlay2 has to copy each one
+# up before it can, which turns a delete into a copy of everything being
+# deleted. On one machine that took a single step from seconds to over an hour.
+RUN npm ci && npm run build && npm prune --omit=dev
 
 # Packages the server never loads. capacitor-nodejs alone is nearly 200MB of
 # Android runtime, and the build tooling that survives the prune is only there
