@@ -146,13 +146,19 @@ export function invidiousItemSchema(item: Helpers.YTNode): Video | Channel | Pla
 			});
 		}
 
+		// The picture is checked for rather than the node that used to hold it:
+		// YouTube has emptied this field while leaving the node in place.
+		const lockupThumbnails = item.content_image?.is(YTNodes.ThumbnailView)
+			? (item.content_image.image as Thumbnail[])
+			: [];
+
 		return {
 			type: 'video',
 			title: item.metadata?.title.toString() ?? '',
 			videoId: item.content_id,
 			viewCountText: viewCountText,
-			videoThumbnails: item.content_image?.is(YTNodes.ThumbnailView)
-				? (item.content_image.image as Thumbnail[])
+			videoThumbnails: lockupThumbnails.length
+				? lockupThumbnails
 				: thumbnailsForVideoId(item.content_id),
 			published: 0,
 			publishedText,

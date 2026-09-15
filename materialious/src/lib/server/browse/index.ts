@@ -99,7 +99,7 @@ export function toBrowseVideo(item: Helpers.YTNode): BrowseVideo | null {
 			publishedText: video.published?.toString() ?? '',
 			publishedSecondsAgo: secondsSincePublished(video.published?.toString()),
 			viewCountText: video.view_count?.toString() ?? '',
-			thumbnail: bestThumbnail(video.thumbnails) ?? thumbnailUrlForVideoId(video.video_id),
+			thumbnail: bestThumbnail(video.thumbnails) || thumbnailUrlForVideoId(video.video_id) || null,
 			liveNow: video.is_live === true,
 			type: video.is_live === true ? 'stream' : 'video'
 		};
@@ -141,6 +141,10 @@ export function toBrowseVideo(item: Helpers.YTNode): BrowseVideo | null {
 		// link is what distinguishes them.
 		const authorId =
 			metadata?.image?.renderer_context?.command_context?.on_tap?.payload?.browseId ?? '';
+
+		const lockupImage = item.content_image?.is(YTNodes.ThumbnailView)
+			? item.content_image.image
+			: undefined;
 		const statsRow = authorId ? rows[1] : rows[0];
 
 		return {
@@ -152,10 +156,7 @@ export function toBrowseVideo(item: Helpers.YTNode): BrowseVideo | null {
 			publishedText: statsRow?.metadata_parts?.[1]?.text?.text ?? '',
 			publishedSecondsAgo: secondsSincePublished(statsRow?.metadata_parts?.[1]?.text?.text),
 			viewCountText: statsRow?.metadata_parts?.[0]?.text?.text ?? '',
-			thumbnail:
-				bestThumbnail(
-					item.content_image?.is(YTNodes.ThumbnailView) ? item.content_image.image : undefined
-				) ?? thumbnailUrlForVideoId(item.content_id),
+			thumbnail: bestThumbnail(lockupImage) || thumbnailUrlForVideoId(item.content_id) || null,
 			liveNow: live,
 			type: live ? 'stream' : 'video'
 		};
@@ -179,7 +180,7 @@ export function toBrowseVideo(item: Helpers.YTNode): BrowseVideo | null {
 			publishedText: '',
 			publishedSecondsAgo: null,
 			viewCountText: item.overlay_metadata?.secondary_text?.toString() ?? '',
-			thumbnail: bestThumbnail(item.thumbnail) ?? shortsThumbnailUrl(videoId),
+			thumbnail: bestThumbnail(item.thumbnail) || shortsThumbnailUrl(videoId) || null,
 			liveNow: false,
 			type: 'shortVideo'
 		};

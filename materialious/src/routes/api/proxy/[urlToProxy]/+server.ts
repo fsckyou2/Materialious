@@ -80,6 +80,13 @@ const HEADERS_TIMEOUT_MS = 8_000;
  */
 const BODY_TIMEOUT_MS = 60_000;
 
+/**
+ * A reply that keeps trickling resets the allowance above on every chunk, so
+ * this is the backstop against one that trickles indefinitely and holds a
+ * connection open for as long as it cares to. Far beyond any real segment.
+ */
+const OVERALL_TIMEOUT_MS = 300_000;
+
 let dispatcher: Agent;
 
 const certPath = privateEnv.PROXY_TRUST_CA;
@@ -95,13 +102,10 @@ const agentOptions = {
 if (certPath && fs.existsSync(certPath)) {
 	dispatcher = new Agent({
 		...agentOptions,
-		connect: {
-			timeout: CONNECT_TIMEOUT_MS,
-			ca: [fs.readFileSync(certPath), ...tls.rootCertificates]
-		}
+		connect: { ca: [fs.readFileSync(certPath), ...tls.rootCertificates] }
 	});
 } else {
-	dispatcher = new Agent({ ...agentOptions, connect: { timeout: CONNECT_TIMEOUT_MS } });
+	dispatcher = new Agent(agentOptions);
 }
 
 /** Undici reports the reason for a failed fetch as the cause of a plain error. */
@@ -118,23 +122,35 @@ function failureCode(err: unknown): string {
 }
 
 /**
- * Whether asking again could plausibly do better.
- *
- * All of these happen before any of the answer has been read, so a second
- * attempt repeats nothing and opens a fresh connection, which upstream usually
- * answers at once. A refusal or a bad response is not here: that is upstream
- * saying something, and it would say the same thing again.
+ * Failures from before the request reached upstream at all. Nothing was
+ * delivered, so a second attempt repeats nothing, whatever it was asking for.
  */
-const RETRYABLE = new Set([
+const RETRYABLE_BEFORE_SEND = new Set([
 	'UND_ERR_CONNECT_TIMEOUT',
+	'ECONNREFUSED',
+	'EAI_AGAIN',
+	'EHOSTUNREACH',
+	'ENETUNREACH'
+]);
+
+/**
+ * Failures from after it was written to the socket. Losing the connection
+ * before the reply arrives says nothing about whether upstream carried the
+ * request out, so these may only be repeated for methods that ask upstream to
+ * do nothing - retrying a subscribe here would subscribe twice.
+ */
+const RETRYABLE_AFTER_SEND = new Set([
 	'UND_ERR_HEADERS_TIMEOUT',
 	'UND_ERR_SOCKET',
 	'ECONNRESET',
-	'ECONNREFUSED',
-	'ETIMEDOUT',
-	'EAI_AGAIN',
-	'TimeoutError'
+	'ETIMEDOUT'
 ]);
+
+function canRetry(code: string, method: string): boolean {
+	if (RETRYABLE_BEFORE_SEND.has(code)) return true;
+
+	return (method === 'GET' || method === 'HEAD') && RETRYABLE_AFTER_SEND.has(code);
+}
 
 async function proxyRequest(
 	request: Request,
@@ -242,6 +258,9 @@ async function proxyRequest(
 			response = await fetch(urlToProxyObj.toString(), {
 				...requestOptions,
 				body,
+				// A caller that has gone away should not leave its request running
+				// on upstream, and nothing should run forever.
+				signal: AbortSignal.any([request.signal, AbortSignal.timeout(OVERALL_TIMEOUT_MS)]),
 				// @ts-expect-error Node-specific option
 				dispatcher
 			});
@@ -251,7 +270,7 @@ async function proxyRequest(
 			const code = failureCode(err);
 			errorMsg = (err as any).toString();
 
-			if (RETRYABLE.has(code) && attempt < attempts) {
+			if (canRetry(code, request.method) && attempt < attempts) {
 				console.warn(`Proxy ${code}, asking once more: ${target}`);
 				continue;
 			}
