@@ -64,18 +64,77 @@ for (const dynamicDomain of dynamicAllowDomainsEnvVars) {
 	}
 }
 
+/**
+ * A path that is not going to answer should be given up on while there is still
+ * time to ask again, rather than spending the whole budget finding out. Four
+ * seconds is far longer than a reachable host needs.
+ */
+const CONNECT_TIMEOUT_MS = 4_000;
+
+/** Upstream answers in well under a second when it is answering at all. */
+const HEADERS_TIMEOUT_MS = 8_000;
+
+/**
+ * Media segments keep arriving long after their headers did, so this is an
+ * allowance for silence rather than for the size of the thing being sent.
+ */
+const BODY_TIMEOUT_MS = 60_000;
+
 let dispatcher: Agent;
 
 const certPath = privateEnv.PROXY_TRUST_CA;
+const agentOptions = {
+	// Reaching the host, and hearing the first of its answer, are the parts
+	// worth putting a clock on. Timing the whole exchange instead cuts off long
+	// replies that were arriving perfectly well.
+	connectTimeout: CONNECT_TIMEOUT_MS,
+	headersTimeout: HEADERS_TIMEOUT_MS,
+	bodyTimeout: BODY_TIMEOUT_MS
+};
+
 if (certPath && fs.existsSync(certPath)) {
 	dispatcher = new Agent({
+		...agentOptions,
 		connect: {
+			timeout: CONNECT_TIMEOUT_MS,
 			ca: [fs.readFileSync(certPath), ...tls.rootCertificates]
 		}
 	});
 } else {
-	dispatcher = new Agent();
+	dispatcher = new Agent({ ...agentOptions, connect: { timeout: CONNECT_TIMEOUT_MS } });
 }
+
+/** Undici reports the reason for a failed fetch as the cause of a plain error. */
+function failureCode(err: unknown): string {
+	let cause: unknown = err;
+
+	for (let depth = 0; depth < 4 && cause; depth++) {
+		const code = (cause as { code?: unknown }).code;
+		if (typeof code === 'string') return code;
+		cause = (cause as { cause?: unknown }).cause;
+	}
+
+	return (err as { name?: string })?.name ?? 'Error';
+}
+
+/**
+ * Whether asking again could plausibly do better.
+ *
+ * All of these happen before any of the answer has been read, so a second
+ * attempt repeats nothing and opens a fresh connection, which upstream usually
+ * answers at once. A refusal or a bad response is not here: that is upstream
+ * saying something, and it would say the same thing again.
+ */
+const RETRYABLE = new Set([
+	'UND_ERR_CONNECT_TIMEOUT',
+	'UND_ERR_HEADERS_TIMEOUT',
+	'UND_ERR_SOCKET',
+	'ECONNRESET',
+	'ECONNREFUSED',
+	'ETIMEDOUT',
+	'EAI_AGAIN',
+	'TimeoutError'
+]);
 
 async function proxyRequest(
 	request: Request,
@@ -167,10 +226,13 @@ async function proxyRequest(
 	// Upstream occasionally hangs rather than being slow: a call that usually
 	// answers in well under a second sits there until the timeout, and the page
 	// waiting on it has nothing to show for the wait. A second attempt opens a
-	// fresh connection and normally answers at once. A request that timed out
-	// received nothing, so there is nothing that asking again could repeat, and
-	// the body is held in memory by this point and can be sent twice.
+	// fresh connection and normally answers at once. The body is held in memory
+	// by this point and can be sent twice.
 	const attempts = 2;
+
+	// Which call it was is the first thing anyone reading the log wants, and the
+	// query carries signatures and tokens, so it is left out.
+	const target = `${request.method} ${urlToProxyObj.host}${urlToProxyObj.pathname}`;
 
 	let response: Response | undefined;
 	let errorMsg = '';
@@ -180,21 +242,21 @@ async function proxyRequest(
 			response = await fetch(urlToProxyObj.toString(), {
 				...requestOptions,
 				body,
-				signal: AbortSignal.timeout(10000),
 				// @ts-expect-error Node-specific option
 				dispatcher
 			});
 			errorMsg = '';
 			break;
 		} catch (err) {
+			const code = failureCode(err);
 			errorMsg = (err as any).toString();
 
-			if ((err as any)?.name === 'TimeoutError' && attempt < attempts) {
-				console.warn('Proxy timed out, asking once more: ', urlToProxyObj.host);
+			if (RETRYABLE.has(code) && attempt < attempts) {
+				console.warn(`Proxy ${code}, asking once more: ${target}`);
 				continue;
 			}
 
-			console.warn('Proxy failed with error: ', errorMsg);
+			console.warn(`Proxy failed (${code}): ${target}`);
 			break;
 		}
 	}

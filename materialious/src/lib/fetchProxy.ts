@@ -92,9 +92,12 @@ export const fetchProxied = async (
 	);
 
 	try {
-		return await originalFetch(requestInput, requestOptions);
-	} finally {
-		requestSettled(pendingId);
+		const response = await originalFetch(requestInput, requestOptions);
+		requestSettled(pendingId, response.ok ? undefined : `HTTP ${response.status}`);
+		return response;
+	} catch (err) {
+		requestSettled(pendingId, (err as Error)?.name || 'failed');
+		throw err;
 	}
 };
 

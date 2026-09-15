@@ -2,20 +2,7 @@ import { cleanNumber, extractNumber } from '$lib/numbers';
 import { convertToSeconds } from '$lib/time';
 import type { Channel, Playlist, Thumbnail, Video } from '../model';
 import { Helpers, YTNodes } from 'youtubei.js';
-
-/**
- * The shorts tab returns lockups with no thumbnail of their own, so the only
- * thing left to build one from is the video id. Both of these sizes exist for
- * every video; the original aspect ratio variants do not.
- */
-function thumbnailsForVideoId(videoId: string): Thumbnail[] {
-	if (!videoId) return [];
-
-	return [
-		{ url: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`, width: 480, height: 360 },
-		{ url: `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg`, width: 320, height: 180 }
-	];
-}
+import { thumbnailsForVideoId } from '../thumbnails';
 
 /**
  * Playlist lockups carry their length as a badge over the thumbnail, reading
@@ -49,7 +36,9 @@ export function invidiousItemSchema(item: Helpers.YTNode): Video | Channel | Pla
 			videoId: item.video_id,
 			viewCountText: cleanNumber(views),
 			viewCount: views,
-			videoThumbnails: item.thumbnails as Thumbnail[],
+			videoThumbnails: item.thumbnails?.length
+				? (item.thumbnails as Thumbnail[])
+				: thumbnailsForVideoId(item.video_id),
 			published: 0,
 			publishedText: item.published?.toString() || '',
 			description: '',
@@ -162,9 +151,9 @@ export function invidiousItemSchema(item: Helpers.YTNode): Video | Channel | Pla
 			title: item.metadata?.title.toString() ?? '',
 			videoId: item.content_id,
 			viewCountText: viewCountText,
-			videoThumbnails: (item.content_image?.is(YTNodes.ThumbnailView)
-				? item.content_image.image
-				: []) as Thumbnail[],
+			videoThumbnails: item.content_image?.is(YTNodes.ThumbnailView)
+				? (item.content_image.image as Thumbnail[])
+				: thumbnailsForVideoId(item.content_id),
 			published: 0,
 			publishedText,
 			description: '',
