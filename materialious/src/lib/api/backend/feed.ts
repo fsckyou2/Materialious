@@ -2,6 +2,7 @@ import { rawMasterKeyStore } from '$lib/store';
 import { isOwnBackend } from '$lib/shared';
 import { get } from 'svelte/store';
 import type { Feed, Video } from '../model';
+import { thumbnailsForVideoId } from '../thumbnails';
 import { getSubscriptionsBackend } from './subscriptions';
 
 /**
@@ -87,8 +88,12 @@ function toVideo(video: InstanceVideo): Video {
 		type: video.type,
 		videoId: video.videoId,
 		title: video.title,
-		// One picture, already chosen, at the size YouTube serves it.
-		videoThumbnails: video.thumbnail ? [{ url: video.thumbnail, width: 720, height: 404 }] : [],
+		// One picture, already chosen, at the size YouTube serves it. A feed item
+		// in a shape the instance could not read the image out of still has one
+		// under its own id.
+		videoThumbnails: video.thumbnail
+			? [{ url: video.thumbnail, width: 720, height: 404 }]
+			: thumbnailsForVideoId(video.videoId),
 		author: video.author,
 		authorId: video.authorId,
 		authorUrl: video.authorId ? `/channel/${video.authorId}` : '',
@@ -97,9 +102,12 @@ function toVideo(video: InstanceVideo): Video {
 		viewCountText: video.viewCountText,
 		description: '',
 		descriptionHtml: '',
-		// Feeds carry an age in words, so this is that read back out - near
-		// enough to sort by, which is all anything uses it for.
-		published: video.publishedSecondsAgo === null ? now : now - video.publishedSecondsAgo,
+		// Feeds carry an age in words, so this is that read back out. A video
+		// whose age could not be read leaves this at zero rather than taking the
+		// current time: the thumbnail prefers this over the wording when it is
+		// set, so standing in the present moment for "unknown" puts every such
+		// video a few seconds old, and ages it as the page sits open.
+		published: video.publishedSecondsAgo === null ? 0 : now - video.publishedSecondsAgo,
 		publishedText: video.publishedText,
 		liveNow: video.liveNow,
 		premium: false,

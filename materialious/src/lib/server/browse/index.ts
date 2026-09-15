@@ -18,6 +18,7 @@ export type * from './types';
 export { BROWSE_CONTRACT_VERSION } from './types';
 import { randomUUID } from 'node:crypto';
 import { getBrowseSession } from './session';
+import { shortsThumbnailUrl, thumbnailUrlForVideoId } from '$lib/api/thumbnails';
 
 function secondsFromLabel(label: string | undefined): number {
 	if (!label) return 0;
@@ -55,19 +56,6 @@ export function secondsSincePublished(text: string | undefined): number | null {
 	if (!unit) return null;
 
 	return Number(match[1]) * unit;
-}
-
-/**
- * A short's thumbnail, worked out from its id.
- *
- * YouTube moved the image on these lockups into a field the parsing library
- * does not read yet, so every short arrives without one. The image is still
- * where it always was, under the video's own id, and `oardefault` is the frame
- * in the shape the short was filmed in rather than letterboxed into a
- * widescreen box.
- */
-function shortsThumbnail(videoId: string): string {
-	return `https://i.ytimg.com/vi/${videoId}/oardefault.jpg`;
 }
 
 function bestThumbnail(thumbnails: { url: string; width?: number }[] | undefined): string | null {
@@ -111,7 +99,7 @@ export function toBrowseVideo(item: Helpers.YTNode): BrowseVideo | null {
 			publishedText: video.published?.toString() ?? '',
 			publishedSecondsAgo: secondsSincePublished(video.published?.toString()),
 			viewCountText: video.view_count?.toString() ?? '',
-			thumbnail: bestThumbnail(video.thumbnails),
+			thumbnail: bestThumbnail(video.thumbnails) || thumbnailUrlForVideoId(video.video_id) || null,
 			liveNow: video.is_live === true,
 			type: video.is_live === true ? 'stream' : 'video'
 		};
@@ -153,6 +141,10 @@ export function toBrowseVideo(item: Helpers.YTNode): BrowseVideo | null {
 		// link is what distinguishes them.
 		const authorId =
 			metadata?.image?.renderer_context?.command_context?.on_tap?.payload?.browseId ?? '';
+
+		const lockupImage = item.content_image?.is(YTNodes.ThumbnailView)
+			? item.content_image.image
+			: undefined;
 		const statsRow = authorId ? rows[1] : rows[0];
 
 		return {
@@ -164,9 +156,7 @@ export function toBrowseVideo(item: Helpers.YTNode): BrowseVideo | null {
 			publishedText: statsRow?.metadata_parts?.[1]?.text?.text ?? '',
 			publishedSecondsAgo: secondsSincePublished(statsRow?.metadata_parts?.[1]?.text?.text),
 			viewCountText: statsRow?.metadata_parts?.[0]?.text?.text ?? '',
-			thumbnail: bestThumbnail(
-				item.content_image?.is(YTNodes.ThumbnailView) ? item.content_image.image : undefined
-			),
+			thumbnail: bestThumbnail(lockupImage) || thumbnailUrlForVideoId(item.content_id) || null,
 			liveNow: live,
 			type: live ? 'stream' : 'video'
 		};
@@ -190,7 +180,7 @@ export function toBrowseVideo(item: Helpers.YTNode): BrowseVideo | null {
 			publishedText: '',
 			publishedSecondsAgo: null,
 			viewCountText: item.overlay_metadata?.secondary_text?.toString() ?? '',
-			thumbnail: bestThumbnail(item.thumbnail) ?? shortsThumbnail(videoId),
+			thumbnail: bestThumbnail(item.thumbnail) || shortsThumbnailUrl(videoId) || null,
 			liveNow: false,
 			type: 'shortVideo'
 		};

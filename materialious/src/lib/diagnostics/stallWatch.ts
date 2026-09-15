@@ -1,5 +1,5 @@
 import { browser } from '$app/environment';
-import { outstandingRequests } from './pendingRequests';
+import { outstandingRequests, recentFailures } from './pendingRequests';
 
 /**
  * Pages that never finish loading are the hardest thing here to look into,
@@ -47,6 +47,7 @@ async function report(context: StallContext, waitedMs: number): Promise<void> {
 				waitedMs,
 				route: location.pathname,
 				waitingFor: outstandingRequests(),
+				recentlyFailed: recentFailures(),
 				...detail
 			})
 		});

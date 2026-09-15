@@ -92,9 +92,14 @@ export const fetchProxied = async (
 	);
 
 	try {
-		return await originalFetch(requestInput, requestOptions);
-	} finally {
-		requestSettled(pendingId);
+		const response = await originalFetch(requestInput, requestOptions);
+		// Not `ok`, which counts a cache revalidation as a failure and would fill
+		// the record with 304s while the real failure aged out of it.
+		requestSettled(pendingId, response.status >= 400 ? `HTTP ${response.status}` : undefined);
+		return response;
+	} catch (err) {
+		requestSettled(pendingId, (err as Error)?.name || 'failed');
+		throw err;
 	}
 };
 
