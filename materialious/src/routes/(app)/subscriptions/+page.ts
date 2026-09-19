@@ -1,5 +1,5 @@
 import { getFeed } from '$lib/api/index';
-import type { PlaylistPageVideo, Video, VideoBase } from '$lib/api/model';
+import type { Feed, PlaylistPageVideo, Video, VideoBase } from '$lib/api/model';
 import { localDb } from '$lib/dexie';
 import { excludeDuplicateFeeds } from '$lib/feed';
 import { authProtected } from '$lib/auth';
@@ -36,6 +36,23 @@ async function sortVideosByFavourites(videos: supportedVideos): Promise<supporte
 }
 
 /**
+ * Folds a freshly fetched feed into whatever is already on screen.
+ *
+ * Kept in one place because the difference between replacing the list and
+ * adding to it is the difference between a screen that keeps up and one that
+ * quietly stops, and there are three callers.
+ */
+async function remember(feed: Feed): Promise<void> {
+	const showing = get(feedCacheStore).subscription ?? [];
+	const merged = await sortVideosByFavourites([...feed.notifications, ...feed.videos, ...showing]);
+
+	feedCacheStore.set({
+		...get(feedCacheStore),
+		subscription: excludeDuplicateFeeds(showing, merged) as supportedVideos
+	});
+}
+
+/**
  * Fetches the feed once more, for an answer that came back incomplete.
  *
  * Bounded rather than "until complete": a channel that has been deleted is
@@ -47,8 +64,7 @@ function askAgainShortly(attempt = 1) {
 		const feed = await getFeed(100, 1).catch(() => null);
 		if (!feed) return;
 
-		const videos = await sortVideosByFavourites([...feed.notifications, ...feed.videos]);
-		feedCacheStore.set({ ...get(feedCacheStore), subscription: videos });
+		await remember(feed);
 
 		if (feed.partial && attempt < PARTIAL_ATTEMPTS) askAgainShortly(attempt + 1);
 	}, PARTIAL_RETRY_MS);
@@ -61,7 +77,7 @@ const PARTIAL_ATTEMPTS = 2;
 export async function load() {
 	authProtected();
 
-	let videos = get(feedCacheStore).subscription;
+	const videos = get(feedCacheStore).subscription;
 
 	if (!videos) {
 		feedCacheStore.set({ ...get(feedCacheStore), subscription: [] });
@@ -69,8 +85,7 @@ export async function load() {
 		feedLoadingStore.set(true);
 		getFeed(100, 1)
 			.then(async (feed) => {
-				videos = await sortVideosByFavourites([...feed.notifications, ...feed.videos]);
-				feedCacheStore.set({ ...get(feedCacheStore), subscription: videos });
+				await remember(feed);
 
 				// The instance answered with the channels that were ready and is
 				// still gathering the rest. Showing that immediately beats
@@ -87,20 +102,15 @@ export async function load() {
 	} else {
 		feedLoadingStore.set(false);
 
-		await getFeed(100, 1).then(async (feeds) => {
-			const newVideos = await sortVideosByFavourites([
-				...feeds.notifications,
-				...feeds.videos,
-				...videos
-			]);
-			feedCacheStore.set({
-				...get(feedCacheStore),
-				subscription: excludeDuplicateFeeds(videos, newVideos) as (
-					| VideoBase
-					| Video
-					| PlaylistPageVideo
-				)[]
-			});
-		});
+		const feed = await getFeed(100, 1);
+		await remember(feed);
+
+		// An incomplete answer matters more here than above, not less. A screen
+		// that is opened fresh each time gets another chance on the next visit;
+		// one that is never closed - a television, left on the same screen for
+		// days - has only ever been through this branch, so a channel the
+		// instance had not gathered yet would stay missing until the
+		// application was restarted.
+		if (feed.partial) askAgainShortly();
 	}
 }
