@@ -1,7 +1,7 @@
 import { getFeed } from '$lib/api/index';
-import type { Feed, PlaylistPageVideo, Video, VideoBase } from '$lib/api/model';
+import type { PlaylistPageVideo, Video, VideoBase } from '$lib/api/model';
 import { localDb } from '$lib/dexie';
-import { excludeDuplicateFeeds } from '$lib/feed';
+import { extractUniqueId } from '$lib/feed';
 import { feedCacheStore, feedLoadingStore } from '$lib/store';
 import { get } from 'svelte/store';
 
@@ -36,6 +36,10 @@ async function sortVideosByFavourites(videos: SupportedVideos): Promise<Supporte
 			video.promotedBy = 'favourited';
 			favouriteVideos.push(video);
 		} else {
+			// Cleared rather than left: this runs over everything on screen on
+			// every merge, so a channel that has since been unstarred would
+			// otherwise keep its mark for as long as the page stayed open.
+			delete video.promotedBy;
 			regularVideos.push(video);
 		}
 	});
@@ -43,20 +47,62 @@ async function sortVideosByFavourites(videos: SupportedVideos): Promise<Supporte
 	return [...favouriteVideos, ...regularVideos];
 }
 
+/** When an item went up, for ordering. Anything undated sorts last. */
+function publishedAt(item: SupportedVideos[number]): number {
+	const published = 'published' in item ? item.published : 0;
+
+	if (typeof published === 'number') return published;
+
+	const parsed = Date.parse(published);
+
+	return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : 0;
+}
+
+/** Newest first, and by id where two went up at the same moment. */
+function newestFirst(a: SupportedVideos[number], b: SupportedVideos[number]): number {
+	const difference = publishedAt(b) - publishedAt(a);
+	if (difference !== 0) return difference;
+
+	return extractUniqueId(a).localeCompare(extractUniqueId(b));
+}
+
 /**
- * Folds a freshly fetched feed into whatever is already on screen.
+ * Folds newly fetched videos into whatever is already on screen.
  *
- * Adding to the list rather than replacing it, so that a refresh which came
- * back short does not take away videos that were already there.
+ * Adding to the list rather than replacing it, so that a fetch which came back
+ * short does not take away videos that were already there - but the result is
+ * put back in order rather than simply stacked on one end. Both callers used
+ * to concatenate: a refresh put its videos in front of the list and a further
+ * page put its own behind it, so a feed ended up as a run of blocks, each in
+ * order within itself and none of them in order against the others. Five
+ * minutes ago, then two hours, then a day, then four hours.
+ *
+ * Where the same video arrives twice the newly fetched copy is the one kept:
+ * it carries a fresher view count and, for anything recent, an exact date.
  */
-async function remember(feed: Feed): Promise<void> {
+async function remember(videos: SupportedVideos): Promise<void> {
 	const showing = get(feedCacheStore).subscription ?? [];
-	const merged = await sortVideosByFavourites([...feed.notifications, ...feed.videos, ...showing]);
+
+	const byId = new Map<string, SupportedVideos[number]>();
+	for (const video of [...videos, ...showing]) {
+		const id = extractUniqueId(video);
+		if (!byId.has(id)) byId.set(id, video);
+	}
 
 	feedCacheStore.set({
 		...get(feedCacheStore),
-		subscription: excludeDuplicateFeeds(showing, merged) as SupportedVideos
+		subscription: await sortVideosByFavourites([...byId.values()].sort(newestFirst))
 	});
+}
+
+/**
+ * Adds a further page of the feed to what is on screen.
+ *
+ * Kept here with the rest of it so that scrolling and refreshing cannot order
+ * the same list two different ways.
+ */
+export async function addToSubscriptionFeed(videos: SupportedVideos): Promise<void> {
+	await remember(videos);
 }
 
 /**
@@ -71,7 +117,7 @@ function askAgainShortly(attempt = 1): void {
 		const feed = await getFeed(FEED_PAGE_SIZE, 1).catch(() => null);
 		if (!feed) return;
 
-		await remember(feed);
+		await remember([...feed.notifications, ...feed.videos]);
 
 		if (feed.partial && attempt < PARTIAL_ATTEMPTS) askAgainShortly(attempt + 1);
 	}, PARTIAL_RETRY_MS);
@@ -94,7 +140,7 @@ export function refreshSubscriptionFeed(): Promise<void> {
 	refreshing ??= (async () => {
 		const feed = await getFeed(FEED_PAGE_SIZE, 1);
 
-		await remember(feed);
+		await remember([...feed.notifications, ...feed.videos]);
 
 		if (feed.partial) askAgainShortly();
 	})().finally(() => {
