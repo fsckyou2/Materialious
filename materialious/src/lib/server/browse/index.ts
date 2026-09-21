@@ -18,6 +18,7 @@ export type * from './types';
 export { BROWSE_CONTRACT_VERSION } from './types';
 import { randomUUID } from 'node:crypto';
 import { getBrowseSession } from './session';
+import { publishedDates } from './publishedDates';
 import { shortsThumbnailUrl, thumbnailUrlForVideoId } from '$lib/api/thumbnails';
 
 function secondsFromLabel(label: string | undefined): number {
@@ -98,6 +99,7 @@ export function toBrowseVideo(item: Helpers.YTNode): BrowseVideo | null {
 			lengthSeconds: secondsFromLabel(video.length_text?.text),
 			publishedText: video.published?.toString() ?? '',
 			publishedSecondsAgo: secondsSincePublished(video.published?.toString()),
+			publishedAt: null,
 			viewCountText: video.view_count?.toString() ?? '',
 			thumbnail: bestThumbnail(video.thumbnails) || thumbnailUrlForVideoId(video.video_id) || null,
 			liveNow: video.is_live === true,
@@ -155,6 +157,7 @@ export function toBrowseVideo(item: Helpers.YTNode): BrowseVideo | null {
 			lengthSeconds,
 			publishedText: statsRow?.metadata_parts?.[1]?.text?.text ?? '',
 			publishedSecondsAgo: secondsSincePublished(statsRow?.metadata_parts?.[1]?.text?.text),
+			publishedAt: null,
 			viewCountText: statsRow?.metadata_parts?.[0]?.text?.text ?? '',
 			thumbnail: bestThumbnail(lockupImage) || thumbnailUrlForVideoId(item.content_id) || null,
 			liveNow: live,
@@ -179,6 +182,7 @@ export function toBrowseVideo(item: Helpers.YTNode): BrowseVideo | null {
 			lengthSeconds: 0,
 			publishedText: '',
 			publishedSecondsAgo: null,
+			publishedAt: null,
 			viewCountText: item.overlay_metadata?.secondary_text?.toString() ?? '',
 			thumbnail: bestThumbnail(item.thumbnail) || shortsThumbnailUrl(videoId) || null,
 			liveNow: false,
@@ -713,13 +717,28 @@ async function fetchChannel(channelId: string, kind: FeedKind): Promise<ChannelF
 
 	const request = (async () => {
 		try {
-			const channel = await fetchWithOneRetry(channelId, kind);
+			// Both at once: the dates are worth having but not worth waiting for
+			// in series behind the page they describe.
+			const [channel, dates] = await Promise.all([
+				fetchWithOneRetry(channelId, kind),
+				publishedDates(channelId)
+			]);
+
 			const loaded: ChannelFeed = {
-				videos: channel.videos.map((video) => ({
-					...video,
-					author: video.author || channel.name,
-					authorId: video.authorId || channelId
-				})),
+				videos: channel.videos.map((video) => {
+					const at = dates.get(video.videoId);
+
+					return {
+						...video,
+						author: video.author || channel.name,
+						authorId: video.authorId || channelId,
+						publishedAt: at ?? null,
+						publishedSecondsAgo:
+							at === undefined
+								? video.publishedSecondsAgo
+								: Math.max(0, Math.round((Date.now() - at) / 1000))
+					};
+				}),
 				next: channel.continuation,
 				at: Date.now()
 			};
@@ -872,10 +891,56 @@ async function deepenChannel(key: string, channel: ChannelFeed): Promise<boolean
 	return request;
 }
 
-/** Live first - it is happening now - then newest to oldest. */
-function byRecency(a: BrowseVideo, b: BrowseVideo): number {
-	if (a.liveNow !== b.liveNow) return a.liveNow ? -1 : 1;
-	return (a.publishedSecondsAgo ?? Infinity) - (b.publishedSecondsAgo ?? Infinity);
+/**
+ * When a video went up, for ordering; later is newer.
+ *
+ * An exact time where the channel's feed carried one, and the wording read
+ * back against the clock otherwise. The exact one is used as it is rather than
+ * being turned into an age: an age is fixed when its channel is fetched, and
+ * channels are fetched up to half an hour apart, so ages from two of them are
+ * not quite measured against the same moment.
+ */
+function publishedMs(video: BrowseVideo, now: number): number {
+	if (video.publishedAt !== null) return video.publishedAt;
+	if (video.publishedSecondsAgo !== null) return now - video.publishedSecondsAgo * 1000;
+
+	return Number.NEGATIVE_INFINITY;
+}
+
+/** A video's age restated against the given moment, where that is possible. */
+function agedAsOf(video: BrowseVideo, asOf: number): BrowseVideo {
+	if (video.publishedAt === null) return video;
+
+	return {
+		...video,
+		publishedSecondsAgo: Math.max(0, Math.round((asOf - video.publishedAt) / 1000))
+	};
+}
+
+/** Whether anything is known about when a video went up. */
+function isDated(video: BrowseVideo): boolean {
+	return video.publishedAt !== null || video.publishedSecondsAgo !== null;
+}
+
+/**
+ * Live first - it is happening now - then newest to oldest, and by id where
+ * even that cannot separate two.
+ *
+ * The last of those matters more than it looks: where the wording is all there
+ * is, every video uploaded on the same day claims the same age, and leaving
+ * those in whatever order the channels answered in meant the page boundary
+ * fell somewhere different on every request. A video near it appeared and
+ * disappeared between one look and the next.
+ */
+function byRecency(now: number): (a: BrowseVideo, b: BrowseVideo) => number {
+	return (a, b) => {
+		if (a.liveNow !== b.liveNow) return a.liveNow ? -1 : 1;
+
+		const difference = publishedMs(b, now) - publishedMs(a, now);
+		if (difference !== 0) return difference;
+
+		return a.videoId.localeCompare(b.videoId);
+	};
 }
 
 /**
@@ -894,14 +959,14 @@ function mergeChannels(channels: ChannelFeed[]): BrowseVideo[] {
 		const rest: BrowseVideo[] = [];
 
 		for (const video of channel.videos) {
-			if (video.publishedSecondsAgo === null) rest.push(video);
-			else dated.push(video);
+			if (isDated(video)) dated.push(video);
+			else rest.push(video);
 		}
 
 		if (rest.length) undated.push(rest);
 	}
 
-	dated.sort(byRecency);
+	dated.sort(byRecency(Date.now()));
 
 	const dealt: BrowseVideo[] = [];
 	const deepest = Math.max(0, ...undated.map((channel) => channel.length));
@@ -994,8 +1059,14 @@ export async function getFeed(
 		videos = merged();
 	}
 
+	// Ages are worked out when a channel is fetched and a channel is held for
+	// half an hour, so by the time one is handed out it can be half an hour
+	// behind. Where the exact time is known the age is taken again here, so
+	// what a device is told is as of now.
+	const asOf = Date.now();
+
 	return {
-		videos: videos.slice(offset, offset + limit),
+		videos: videos.slice(offset, offset + limit).map((video) => agedAsOf(video, asOf)),
 		hasMore: videos.length > offset + limit || answered.some((entry) => entry.channel.next),
 		// Says this is what had arrived in time, not everything there is: a
 		// client that asks again shortly gets the rest.
