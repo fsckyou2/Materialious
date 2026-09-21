@@ -12,6 +12,7 @@
 	import Thumbnail from '$lib/components/thumbnail/VideoThumbnail.svelte';
 	import Player from '$lib/components/player/Player.svelte';
 	import { getPages } from '$lib/navPages';
+	import { refreshSubscriptionFeed } from '$lib/subscriptionFeed';
 	import {
 		invidiousAuthStore,
 		invidiousInstanceStore,
@@ -49,6 +50,26 @@
 	let showWatchParty = $state(page.url.searchParams.get('room') !== null);
 
 	let pages = $state(getPages());
+
+	/**
+	 * Pressing the logo, or Home, is how somebody asks for the newest videos.
+	 *
+	 * Going to a page you are already on gives the router nothing to do, so
+	 * relying on the feed's own load to run leaves the screen as it was - which
+	 * on anything left open, a television especially, means never seeing a
+	 * video published since it was opened. Asked for here instead; the feed
+	 * shares one request between this and its load, so it is fetched once
+	 * however the reader got here.
+	 */
+	function refreshFeedIfHome(href: string) {
+		// The feed lives at /subscriptions, and / is sent there when this
+		// instance is the backend, so both lead to it.
+		if (!isYTBackend() || (href !== '/' && href !== '/subscriptions')) return;
+
+		refreshSubscriptionFeed().catch(() => {
+			// The feed on screen is left as it is; nothing here to tell.
+		});
+	}
 	invidiousAuthStore.subscribe(() => {
 		pages = getPages();
 	});
@@ -249,7 +270,12 @@
 		class:hide-element={$playerTheatreModeIsActive || $playerIsInWindowFullscreen}
 	>
 		<header class="small-padding no-margin">
-			<a href={resolve($interfaceDefaultPage, {})} tabindex="-1" data-sveltekit-preload-data="off">
+			<a
+				href={resolve($interfaceDefaultPage, {})}
+				onclick={() => refreshFeedIfHome($interfaceDefaultPage)}
+				tabindex="-1"
+				data-sveltekit-preload-data="off"
+			>
 				<Logo />
 			</a>
 		</header>
@@ -260,7 +286,10 @@
 			</a>
 		{/if}
 		{#each pages as navPage (navPage)}
-			<a href={resolve(navPage.href, {})} class:active={page.url.href.endsWith(navPage.href)}
+			<a
+				href={resolve(navPage.href, {})}
+				onclick={() => refreshFeedIfHome(navPage.href)}
+				class:active={page.url.href.endsWith(navPage.href)}
 				><i>{navPage.icon}</i>
 				<div>{navPage.name}</div>
 			</a>
@@ -295,7 +324,10 @@
 		>
 			{#if $playerTheatreModeIsActive}
 				<header role="presentation" style="cursor: pointer;" tabindex="-1" class="small-padding">
-					<a href={resolve($interfaceDefaultPage, {})}>
+					<a
+						href={resolve($interfaceDefaultPage, {})}
+						onclick={() => refreshFeedIfHome($interfaceDefaultPage)}
+					>
 						<Logo />
 					</a>
 				</header>
@@ -402,6 +434,7 @@
 			<a
 				class="round"
 				href={resolve(navPage.href, {})}
+				onclick={() => refreshFeedIfHome(navPage.href)}
 				class:active={page.url.href.endsWith(navPage.href)}
 				data-sveltekit-preload-data="off"
 				><i>{navPage.icon}</i>
