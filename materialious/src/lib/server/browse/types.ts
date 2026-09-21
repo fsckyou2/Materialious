@@ -43,14 +43,21 @@ export type BrowseVideo = Pick<
 > & {
 	publishedText: string;
 	/**
-	 * Roughly how old the video is, in seconds.
+	 * How old the video is, in seconds.
 	 *
-	 * Feeds carry an age in words rather than a date, so this is read back out
-	 * of that text. It is approximate by construction - "2 weeks ago" covers a
-	 * week either side - but it is enough to put a merged feed in order, which
-	 * is the only thing asking for it.
+	 * Taken from the channel's own feed where that covers the video, and read
+	 * back out of the wording otherwise. The wording is approximate by
+	 * construction - "2 weeks ago" covers a week either side, and "1 day ago"
+	 * covers a whole day - which is why the feed is preferred: a merged list
+	 * where everything uploaded yesterday claims the same age cannot be put in
+	 * a stable order.
 	 */
 	publishedSecondsAgo: number | null;
+	/**
+	 * When it went up, as milliseconds since the epoch, where that is known
+	 * exactly. Null when only the wording was available.
+	 */
+	publishedAt: number | null;
 	/** The one picture to show, picked here so a device need not choose. */
 	thumbnail: string | null;
 	liveNow: boolean;
