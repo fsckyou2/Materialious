@@ -37,3 +37,48 @@ export function shortsThumbnailUrl(videoId: string): string {
 
 	return `https://i.ytimg.com/vi/${videoId}/oardefault.jpg`;
 }
+
+/**
+ * Pictures to try for a video, in order, when the one it came with may not load.
+ *
+ * The larger sizes - hq720, maxres, and the upright one shorts use - are made a
+ * while after upload, and never at all for some older videos, so a video that
+ * went up recently often points at one that answers 404 for the time being. The
+ * two sizes above are there from the start and are what is left to fall back on.
+ *
+ * They are asked for from wherever the preferred picture was served, so a
+ * picture from an Invidious instance falls back to that instance rather than
+ * going to YouTube directly. Only a picture whose address says nothing about
+ * where the others live falls back to YouTube's own.
+ */
+export function thumbnailCandidates(preferred: string, videoId: string): string[] {
+	const candidates = [preferred];
+
+	const sameHost = sameHostThumbnails(preferred);
+	if (sameHost.length > 0) {
+		candidates.push(...sameHost);
+	} else {
+		candidates.push(...thumbnailsForVideoId(videoId).map((thumbnail) => thumbnail.url));
+	}
+
+	return [...new Set(candidates.filter(Boolean))];
+}
+
+function sameHostThumbnails(source: string): string[] {
+	let url: URL;
+	try {
+		url = new URL(source.startsWith('//') ? `https:${source}` : source);
+	} catch {
+		return [];
+	}
+
+	if (url.protocol !== 'https:' && url.protocol !== 'http:') return [];
+
+	// YouTube and Invidious both lay pictures out as /vi/<id>/<size>.jpg, with
+	// /vi_webp/ for the same pictures in another format.
+	const match = url.pathname.match(/^(.*)\/vi(?:_webp)?\/([^/]+)\/[^/]+$/);
+	if (!match) return [];
+
+	const base = `${url.origin}${match[1]}/vi/${match[2]}`;
+	return [`${base}/hqdefault.jpg`, `${base}/mqdefault.jpg`];
+}
