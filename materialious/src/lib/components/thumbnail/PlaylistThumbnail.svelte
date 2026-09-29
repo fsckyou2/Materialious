@@ -1,12 +1,13 @@
 <script lang="ts">
-	import { getBestThumbnail, imageHandleCors } from '$lib/images';
+	import { getBestThumbnail } from '$lib/images';
 	import { resolve } from '$app/paths';
 	import { letterCase } from '$lib/letterCasing';
 	import { _ } from '$lib/i18n';
 	import type { Playlist, PlaylistPage } from '$lib/api/model';
 	import { truncate } from '$lib/misc';
-	import { Avatar } from 'melt/builders';
-	import { mergeAttrs } from 'melt';
+	import { onDestroy } from 'svelte';
+	import { thumbnailCandidates } from '$lib/api/thumbnails';
+	import { ThumbnailLoader } from './thumbnailLoader.svelte';
 
 	interface Props {
 		playlist: Playlist | PlaylistPage;
@@ -24,9 +25,11 @@
 		return playlist.playlistThumbnail;
 	}
 
-	let thumbnailSrc = $state(getThumbnailSrc());
+	const thumbnail = new ThumbnailLoader(() =>
+		thumbnailCandidates(getThumbnailSrc(), playlist.videos?.[0]?.videoId ?? '')
+	);
 
-	const thumbnail = new Avatar({ src: imageHandleCors(thumbnailSrc) });
+	onDestroy(() => thumbnail.destroy());
 </script>
 
 <a
@@ -34,14 +37,20 @@
 	style="width: 100%; overflow: hidden;min-height:100px;"
 	class="wave"
 >
-	<img
-		class="responsive"
-		{...mergeAttrs(thumbnail.image, {
-			style: 'max-width: 100%;height: 100%;'
-		})}
-		alt="Thumbnail for playlist"
-	/>
-	<div {...thumbnail.fallback} class="secondary-container responsive" style="height: 200px;"></div>
+	{#key thumbnail.attempt}
+		<img
+			class="responsive"
+			src={thumbnail.src}
+			style="max-width: 100%;height: 100%;"
+			style:display={thumbnail.loaded ? 'block' : 'none'}
+			onload={thumbnail.onload}
+			onerror={thumbnail.onerror}
+			alt="Thumbnail for playlist"
+		/>
+	{/key}
+	{#if !thumbnail.loaded}
+		<div class="secondary-container responsive" style="height: 200px;"></div>
+	{/if}
 
 	<div class="absolute right bottom small-margin black white-text small-text thumbnail-corner">
 		{playlist.videoCount}

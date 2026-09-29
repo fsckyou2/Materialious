@@ -71,7 +71,9 @@ export function proxyGoogleImage(source: string): string {
 }
 
 export function imageHandleCors(source: string): string {
-	if (Capacitor.getPlatform() === 'android') {
+	// A blob or data URL is already on the device, and the proxy cannot fetch it.
+	// DeArrow's replacement thumbnails arrive as blob URLs.
+	if (Capacitor.getPlatform() === 'android' && /^https?:/.test(source)) {
 		return corsProxyUrl + source;
 	}
 

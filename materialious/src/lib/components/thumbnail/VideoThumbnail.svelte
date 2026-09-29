@@ -1,12 +1,11 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
-	import { getBestThumbnail, imageHandleCors } from '$lib/images';
+	import { getBestThumbnail } from '$lib/images';
 	import { letterCase } from '$lib/letterCasing';
 	import { cleanNumber, videoLength } from '$lib/numbers';
 	import { onDestroy, onMount } from 'svelte';
 	import { _ } from '$lib/i18n';
 	import { get } from 'svelte/store';
-	import { Avatar } from 'melt/builders';
 
 	import {
 		deArrowEnabledStore,
@@ -24,6 +23,8 @@
 	import { deleteWatchHistoryItem, saveWatchHistory } from '$lib/api';
 	import type { ThumbnailVideo } from '$lib/thumbnail';
 	import { truncate } from '$lib/misc';
+	import { thumbnailCandidates } from '$lib/api/thumbnails';
+	import { ThumbnailLoader } from './thumbnailLoader.svelte';
 
 	interface Props {
 		video: ThumbnailVideo;
@@ -56,9 +57,12 @@
 
 	let progress: string | undefined = $state();
 
-	let thumbnailSrc = $state(
-		'thumbnail' in video ? video.thumbnail : getBestThumbnail(video.videoThumbnails, 9999, 9999)
-	);
+	const originalThumbnailSrc =
+		'thumbnail' in video ? video.thumbnail : getBestThumbnail(video.videoThumbnails, 9999, 9999);
+
+	// DeArrow's picture goes in front of the one the video came with, which stays
+	// behind it in case the replacement does not load.
+	let deArrowThumbnailSrc = $state('');
 
 	if (get(deArrowEnabledStore)) {
 		try {
@@ -83,7 +87,10 @@
 						});
 
 						// Nothing to show means the video keeps the thumbnail it came with.
-						if (replacement) thumbnailSrc = replacement;
+						if (replacement) {
+							deArrowThumbnailSrc = replacement;
+							thumbnailImage.reset();
+						}
 
 						break;
 					}
@@ -99,15 +106,20 @@
 	let thumbnailImageElement: HTMLImageElement | undefined = $state();
 	let thumbnailElement: HTMLElement | undefined = $state();
 
-	const thumbnail = new Avatar({
-		src: () => imageHandleCors(thumbnailSrc),
-		onLoadingStatusChange: () => {
-			if (thumbnailImageElement) {
-				thumbnailHeight = thumbnailImageElement.naturalHeight;
-				thumbnailWidth = thumbnailImageElement.naturalWidth;
-			}
+	const thumbnailImage = new ThumbnailLoader(() =>
+		[deArrowThumbnailSrc, ...thumbnailCandidates(originalThumbnailSrc, video.videoId)].filter(
+			Boolean
+		)
+	);
+
+	function onThumbnailLoad(event: Event) {
+		thumbnailImage.onload(event);
+
+		if (thumbnailImageElement) {
+			thumbnailHeight = thumbnailImageElement.naturalHeight;
+			thumbnailWidth = thumbnailImageElement.naturalWidth;
 		}
-	});
+	}
 
 	let startedSideways = sideways === true;
 	function disableSideways() {
@@ -142,6 +154,7 @@
 	onDestroy(() => {
 		removeEventListener('resize', disableSideways);
 		observer.disconnect();
+		thumbnailImage.destroy();
 	});
 
 	function onVideoSelected() {
@@ -296,19 +309,22 @@
 		>
 			<div class="thumbnail-image">
 				<div class:crop={thumbnailHeight > thumbnailWidth}>
-					<img
-						class="responsive"
-						class:watched={progress}
-						{...thumbnail.image}
-						bind:this={thumbnailImageElement}
-						alt="Thumbnail for video"
-					/>
+					{#key thumbnailImage.attempt}
+						<img
+							class="responsive"
+							class:watched={progress}
+							src={thumbnailImage.src}
+							style:display={thumbnailImage.loaded ? 'block' : 'none'}
+							onload={onThumbnailLoad}
+							onerror={thumbnailImage.onerror}
+							bind:this={thumbnailImageElement}
+							alt="Thumbnail for video"
+						/>
+					{/key}
 				</div>
-				<div
-					{...thumbnail.fallback}
-					class="secondary-container responsive"
-					style="height: 200px;"
-				></div>
+				{#if !thumbnailImage.loaded}
+					<div class="secondary-container responsive" style="height: 200px;"></div>
+				{/if}
 
 				{#if !$isAndroidTvStore}
     				{#if progress}
