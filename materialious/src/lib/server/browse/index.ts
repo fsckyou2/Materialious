@@ -41,7 +41,30 @@ const AGE_UNITS: Record<string, number> = {
 };
 
 /**
- * Turns YouTube's "3 days ago" into an age in seconds.
+ * Every way YouTube has been seen to spell a unit, longest first.
+ *
+ * Months come before minutes, so that the "mo" in "7mo ago" is not read as an
+ * "m" with something left over.
+ */
+const AGE_UNIT_SPELLINGS: [RegExp, keyof typeof AGE_UNITS][] = [
+	[/^(seconds?|secs?|s)$/i, 'second'],
+	[/^(months?|mos?)$/i, 'month'],
+	[/^(minutes?|mins?|m)$/i, 'minute'],
+	[/^(hours?|hrs?|h)$/i, 'hour'],
+	[/^(days?|d)$/i, 'day'],
+	[/^(weeks?|wks?|w)$/i, 'week'],
+	[/^(years?|yrs?|y)$/i, 'year']
+];
+
+const AGE = /(\d+)\s*([a-z]+)\s+ago/i;
+
+/**
+ * Turns YouTube's "3 days ago", or the "3d ago" it has since moved to, into an
+ * age in seconds.
+ *
+ * The short form arrived without notice and none of it was read, so every
+ * video lost its age at once and a feed of a hundred and sixty channels came
+ * out in whatever order the channels answered in. Both spellings are read now.
  *
  * Anything it cannot read - a scheduled premiere, a live badge, a language this
  * instance does not run in - comes back null, and sorts to the end rather than
@@ -50,13 +73,13 @@ const AGE_UNITS: Record<string, number> = {
 export function secondsSincePublished(text: string | undefined): number | null {
 	if (!text) return null;
 
-	const match = text.match(/(\d+)\s+(second|minute|hour|day|week|month|year)s?\s+ago/i);
+	const match = text.match(AGE);
 	if (!match) return null;
 
-	const unit = AGE_UNITS[match[2].toLowerCase()];
+	const unit = AGE_UNIT_SPELLINGS.find(([spelling]) => spelling.test(match[2]))?.[1];
 	if (!unit) return null;
 
-	return Number(match[1]) * unit;
+	return Number(match[1]) * AGE_UNITS[unit];
 }
 
 function bestThumbnail(thumbnails: { url: string; width?: number }[] | undefined): string | null {
@@ -149,14 +172,23 @@ export function toBrowseVideo(item: Helpers.YTNode): BrowseVideo | null {
 			: undefined;
 		const statsRow = authorId ? rows[1] : rows[0];
 
+		// Which row and slot the age sits in moves around - a video made with
+		// another channel names that channel where the age would have been - so
+		// it is looked for rather than assumed. Where nothing reads as an age,
+		// the usual slot is still shown as it was.
+		const parts = rows.flatMap((row) => row.metadata_parts ?? []);
+		const agePart =
+			parts.find((part) => secondsSincePublished(part.text?.text) !== null)?.text?.text ??
+			statsRow?.metadata_parts?.[1]?.text?.text;
+
 		return {
 			videoId: item.content_id,
 			title: metadata?.title?.toString() ?? '',
 			author: authorId ? (rows[0]?.metadata_parts?.[0]?.text?.text ?? '') : '',
 			authorId,
 			lengthSeconds,
-			publishedText: statsRow?.metadata_parts?.[1]?.text?.text ?? '',
-			publishedSecondsAgo: secondsSincePublished(statsRow?.metadata_parts?.[1]?.text?.text),
+			publishedText: agePart ?? '',
+			publishedSecondsAgo: secondsSincePublished(agePart),
 			publishedAt: null,
 			viewCountText: statsRow?.metadata_parts?.[0]?.text?.text ?? '',
 			thumbnail: bestThumbnail(lockupImage) || thumbnailUrlForVideoId(item.content_id) || null,
