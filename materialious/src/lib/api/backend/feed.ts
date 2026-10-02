@@ -79,6 +79,7 @@ type InstanceVideo = {
 	publishedSecondsAgo: number | null;
 	thumbnail: string | null;
 	liveNow: boolean;
+	collaboration?: boolean;
 };
 
 function toVideo(video: InstanceVideo): Video {
@@ -110,6 +111,7 @@ function toVideo(video: InstanceVideo): Video {
 		published: video.publishedSecondsAgo === null ? 0 : now - video.publishedSecondsAgo,
 		publishedText: video.publishedText,
 		liveNow: video.liveNow,
+		collaboration: video.collaboration === true,
 		premium: false,
 		isUpcoming: false
 	};

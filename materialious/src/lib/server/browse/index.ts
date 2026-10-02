@@ -1,6 +1,7 @@
 import { YTNodes, type Helpers, type Innertube } from 'youtubei.js';
 import type {
 	BrowseChannel,
+	BrowseCollaborator,
 	BrowseComment,
 	BrowsePlaylist,
 	BrowseResults,
@@ -57,6 +58,9 @@ const AGE_UNIT_SPELLINGS: [RegExp, keyof typeof AGE_UNITS][] = [
 ];
 
 const AGE = /(\d+)\s*([a-z]+)\s+ago/i;
+
+/** How a listing names the channels a video was made with, after the first. */
+const COLLABORATORS = /^and\s+\S/;
 
 /**
  * Turns YouTube's "3 days ago", or the "3d ago" it has since moved to, into an
@@ -126,7 +130,8 @@ export function toBrowseVideo(item: Helpers.YTNode): BrowseVideo | null {
 			viewCountText: video.view_count?.toString() ?? '',
 			thumbnail: bestThumbnail(video.thumbnails) || thumbnailUrlForVideoId(video.video_id) || null,
 			liveNow: video.is_live === true,
-			type: video.is_live === true ? 'stream' : 'video'
+			type: video.is_live === true ? 'stream' : 'video',
+			collaboration: false
 		};
 	}
 
@@ -176,24 +181,44 @@ export function toBrowseVideo(item: Helpers.YTNode): BrowseVideo | null {
 		// another channel names that channel where the age would have been - so
 		// it is looked for rather than assumed. Where nothing reads as an age,
 		// the usual slot is still shown as it was.
-		const parts = rows.flatMap((row) => row.metadata_parts ?? []);
-		const agePart =
-			parts.find((part) => secondsSincePublished(part.text?.text) !== null)?.text?.text ??
-			statsRow?.metadata_parts?.[1]?.text?.text;
+		const parts = rows
+			.flatMap((row) => row.metadata_parts ?? [])
+			.map((part) => part.text?.text ?? '');
+		const ageIndex = parts.findIndex((text) => secondsSincePublished(text) !== null);
+		const agePart = ageIndex === -1 ? statsRow?.metadata_parts?.[1]?.text?.text : parts[ageIndex];
+
+		// A video made with other channels names them after its own - "and
+		// Nicole & Ben's Worx Maker Vlogs", or "and 2 more" - in the slot
+		// beside the first. Every listing does this, including a channel's own,
+		// which otherwise names nobody because the channel is implied.
+		const others = parts.find((text) => COLLABORATORS.test(text));
+		const author = others
+			? `${parts[0]} ${others}`
+			: authorId
+				? (rows[0]?.metadata_parts?.[0]?.text?.text ?? '')
+				: '';
+
+		// The view count sits just before the age wherever the age is, which is
+		// also the one slot the names above never take.
+		const viewCountText =
+			ageIndex > 0 && parts[ageIndex - 1] !== others
+				? parts[ageIndex - 1]
+				: (statsRow?.metadata_parts?.[0]?.text?.text ?? '');
 
 		return {
 			videoId: item.content_id,
 			title: metadata?.title?.toString() ?? '',
-			author: authorId ? (rows[0]?.metadata_parts?.[0]?.text?.text ?? '') : '',
+			author,
 			authorId,
 			lengthSeconds,
 			publishedText: agePart ?? '',
 			publishedSecondsAgo: secondsSincePublished(agePart),
 			publishedAt: null,
-			viewCountText: statsRow?.metadata_parts?.[0]?.text?.text ?? '',
+			viewCountText,
 			thumbnail: bestThumbnail(lockupImage) || thumbnailUrlForVideoId(item.content_id) || null,
 			liveNow: live,
-			type: live ? 'stream' : 'video'
+			type: live ? 'stream' : 'video',
+			collaboration: others !== undefined
 		};
 	}
 
@@ -218,7 +243,8 @@ export function toBrowseVideo(item: Helpers.YTNode): BrowseVideo | null {
 			viewCountText: item.overlay_metadata?.secondary_text?.toString() ?? '',
 			thumbnail: bestThumbnail(item.thumbnail) || shortsThumbnailUrl(videoId) || null,
 			liveNow: false,
-			type: 'shortVideo'
+			type: 'shortVideo',
+			collaboration: false
 		};
 	}
 
@@ -604,6 +630,244 @@ export async function getComments(videoId: string): Promise<BrowseComment[]> {
 	return flattened;
 }
 
+/**
+ * The raw answers below are read without youtubei.js, which has no parser for
+ * the television layout and turns the collaborator dialog into nothing useful.
+ * These are the parts of them that are read; everything else is ignored.
+ */
+type RawText = { simpleText?: string; runs?: { text?: string }[]; content?: string };
+type RawThumbnails = { thumbnails?: { url: string; width?: number }[] };
+
+type RawTile = {
+	contentId?: string;
+	contentType?: string;
+	onSelectCommand?: { watchEndpoint?: { videoId?: string } };
+	header?: {
+		tileHeaderRenderer?: {
+			thumbnail?: RawThumbnails;
+			thumbnailOverlays?: {
+				thumbnailOverlayTimeStatusRenderer?: { text?: RawText; style?: string };
+			}[];
+		};
+	};
+	metadata?: {
+		tileMetadataRenderer?: {
+			title?: RawText;
+			lines?: { lineRenderer?: { items?: { lineItemRenderer?: { text?: RawText } }[] } }[];
+		};
+	};
+};
+
+type RawShelf = {
+	headerRenderer?: {
+		shelfHeaderRenderer?: { avatarLockup?: { avatarLockupRenderer?: { title?: RawText } } };
+	};
+	content?: { horizontalListRenderer?: { items?: { tileRenderer?: RawTile }[] } };
+};
+
+type RawListItem = {
+	listItemViewModel?: {
+		title?: {
+			content?: string;
+			commandRuns?: {
+				onTap?: { innertubeCommand?: { browseEndpoint?: { browseId?: string } } };
+			}[];
+		};
+		subtitle?: { content?: string };
+		leadingAccessory?: { avatarViewModel?: { image?: { sources?: { url: string }[] } } };
+	};
+};
+
+type RawOwner = {
+	title?: RawText;
+	attributedTitle?: { content?: string };
+	thumbnail?: RawThumbnails;
+	navigationEndpoint?: {
+		browseEndpoint?: { browseId?: string };
+		showDialogCommand?: {
+			panelLoadingStrategy?: {
+				inlineContent?: {
+					dialogViewModel?: { customContent?: { listViewModel?: { listItems?: RawListItem[] } } };
+				};
+			};
+		};
+	};
+};
+
+function rawText(text: RawText | undefined): string {
+	return (
+		text?.simpleText ?? text?.content ?? text?.runs?.map((run) => run.text ?? '').join('') ?? ''
+	);
+}
+
+/** Every value under a given key, however deep, in the order they appear. */
+function findAll<T>(node: unknown, key: string, found: T[] = []): T[] {
+	if (!node || typeof node !== 'object') return found;
+
+	for (const [name, value] of Object.entries(node)) {
+		if (name === key) found.push(value as T);
+		else findAll(value, key, found);
+	}
+
+	return found;
+}
+
+async function rawRequest(endpoint: string, body: Record<string, unknown>): Promise<unknown> {
+	const innertube = await getBrowseSession();
+	const response = await innertube.actions.execute(endpoint, { ...body, parse: false });
+
+	return typeof response.data === 'string' ? JSON.parse(response.data) : response.data;
+}
+
+/**
+ * The title of the shelf a channel's collaborations are on, in the language
+ * this instance's session asks in. The shelf carries no link or id to know it
+ * by, only this.
+ */
+const COLLABORATIONS_SHELF = 'Collaborations';
+
+/**
+ * The videos a channel made with other channels, newest first - including the
+ * ones somebody else uploaded.
+ *
+ * A collaboration is listed only under the channel that uploaded it, so a feed
+ * gathered from channels' own videos never sees one that a subscribed channel
+ * merely took part in. YouTube's own subscription feed does, from data nobody
+ * outside an account can ask for. The one place that says so publicly is a
+ * shelf on the television layout of the channel's page, holding the most
+ * recent ten.
+ *
+ * Each is credited to the channel it was found under, since that is the one
+ * somebody is subscribed to; who else made it is a separate question, answered
+ * by `getCollaborators` when somebody asks.
+ */
+export async function getCollaborations(channelId: string): Promise<BrowseVideo[]> {
+	const page = await rawRequest('/browse', { browseId: channelId, client: 'TV' });
+
+	const shelf = findAll<RawShelf>(page, 'shelfRenderer').find(
+		(candidate) =>
+			rawText(
+				candidate.headerRenderer?.shelfHeaderRenderer?.avatarLockup?.avatarLockupRenderer?.title
+			) === COLLABORATIONS_SHELF
+	);
+
+	const videos: BrowseVideo[] = [];
+
+	for (const { tileRenderer: tile } of shelf?.content?.horizontalListRenderer?.items ?? []) {
+		if (tile?.contentType !== 'TILE_CONTENT_TYPE_VIDEO') continue;
+
+		const videoId = tile.contentId ?? tile.onSelectCommand?.watchEndpoint?.videoId;
+		if (!videoId) continue;
+
+		const lines = (tile.metadata?.tileMetadataRenderer?.lines ?? []).map((line) =>
+			(line.lineRenderer?.items ?? []).map((item) => rawText(item.lineItemRenderer?.text))
+		);
+
+		// The first line names everybody - "Nicole & Ben's Worx Maker Vlogs and
+		// Ben's Worx" - and the second is the views and the age, in words.
+		const byline = (lines[0] ?? []).join('');
+		const stats = lines[1] ?? [];
+		const age = stats.find((text) => secondsSincePublished(text) !== null) ?? '';
+		const views = stats.find((text) => /views?$/i.test(text)) ?? '';
+
+		const header = tile.header?.tileHeaderRenderer;
+		const time = header?.thumbnailOverlays?.find(
+			(overlay) => overlay.thumbnailOverlayTimeStatusRenderer
+		)?.thumbnailOverlayTimeStatusRenderer;
+		const live = time?.style === 'LIVE';
+
+		videos.push({
+			videoId,
+			title: rawText(tile.metadata?.tileMetadataRenderer?.title),
+			author: byline,
+			authorId: channelId,
+			lengthSeconds: live ? 0 : secondsFromLabel(rawText(time?.text)),
+			publishedText: age,
+			publishedSecondsAgo: secondsSincePublished(age),
+			publishedAt: null,
+			// Written "10K views" here, where every other listing says "10K".
+			viewCountText: views.replace(/\s*views?$/i, ''),
+			thumbnail: bestThumbnail(header?.thumbnail?.thumbnails) || thumbnailUrlForVideoId(videoId),
+			liveNow: live,
+			type: live ? 'stream' : 'video',
+			collaboration: true
+		});
+	}
+
+	return videos;
+}
+
+/** Text YouTube wraps in direction marks, which only get in the way here. */
+function withoutDirectionMarks(text: string): string {
+	return text.replace(/[‎‏⁦-⁩]/g, '');
+}
+
+/** How many videos' collaborators are remembered. They do not change. */
+const MAX_REMEMBERED_COLLABORATORS = 500;
+
+const collaborators = new Map<string, BrowseCollaborator[]>();
+
+/**
+ * The channels that made a video, as the dialog YouTube opens from its byline
+ * lists them.
+ *
+ * A video one channel made alone has no dialog, only a link to that channel,
+ * and comes back as a list of one.
+ */
+export async function getCollaborators(videoId: string): Promise<BrowseCollaborator[]> {
+	const remembered = collaborators.get(videoId);
+	if (remembered) return remembered;
+
+	const page = await rawRequest('/next', { videoId });
+	const owner = findAll<RawOwner>(page, 'videoOwnerRenderer')[0];
+
+	const items =
+		owner?.navigationEndpoint?.showDialogCommand?.panelLoadingStrategy?.inlineContent
+			?.dialogViewModel?.customContent?.listViewModel?.listItems ?? [];
+
+	let found: BrowseCollaborator[] = items
+		.map(({ listItemViewModel: item }) => {
+			const sources = item?.leadingAccessory?.avatarViewModel?.image?.sources ?? [];
+			const avatar = sources[sources.length - 1]?.url;
+
+			return {
+				channelId:
+					item?.title?.commandRuns?.[0]?.onTap?.innertubeCommand?.browseEndpoint?.browseId ?? '',
+				name: item?.title?.content ?? '',
+				subtitle: withoutDirectionMarks(item?.subtitle?.content ?? ''),
+				thumbnail: avatar ? (avatar.startsWith('//') ? `https:${avatar}` : avatar) : null
+			};
+		})
+		.filter((collaborator) => /^UC[\w-]{22}$/.test(collaborator.channelId));
+
+	const soleId = owner?.navigationEndpoint?.browseEndpoint?.browseId;
+
+	if (found.length === 0 && soleId) {
+		found = [
+			{
+				channelId: soleId,
+				name: rawText(owner?.title) || (owner?.attributedTitle?.content ?? ''),
+				subtitle: '',
+				thumbnail: bestThumbnail(owner?.thumbnail?.thumbnails)
+			}
+		];
+	}
+
+	// An empty answer is more likely a page that failed to say than a video
+	// nobody made, so it is not kept.
+	if (found.length) {
+		while (collaborators.size >= MAX_REMEMBERED_COLLABORATORS) {
+			const oldest = collaborators.keys().next().value;
+			if (oldest === undefined) break;
+			collaborators.delete(oldest);
+		}
+
+		collaborators.set(videoId, found);
+	}
+
+	return found;
+}
+
 /** How long a channel's videos are served for before being fetched again. */
 const FEED_CACHE_MS = 30 * 60 * 1000;
 
@@ -889,6 +1153,80 @@ async function loadChannel(channelId: string, kind: FeedKind): Promise<ChannelFe
 	return cached;
 }
 
+type Collaborations = { videos: BrowseVideo[]; at: number };
+
+const collaborationCache = new Map<string, Collaborations>();
+
+/** Channels whose collaborations are being fetched right now. */
+const collaborationsInFlight = new Map<string, Promise<Collaborations>>();
+
+async function fetchCollaborations(channelId: string): Promise<Collaborations> {
+	const existing = collaborationsInFlight.get(channelId);
+	if (existing) return existing;
+
+	const request = (async () => {
+		let loaded: Collaborations;
+
+		try {
+			loaded = { videos: await getCollaborations(channelId), at: Date.now() };
+		} catch (error) {
+			// Collaborations are extra: a channel whose shelf cannot be read
+			// still has its own videos in the feed. It is tried again in a
+			// couple of minutes, the same as a channel that failed outright.
+			console.warn(
+				`browse: collaborations for ${channelId} failed:`,
+				error instanceof Error ? error.message : String(error)
+			);
+
+			loaded = {
+				videos: collaborationCache.get(channelId)?.videos ?? [],
+				at: Date.now() - FEED_CACHE_MS + FAILED_CHANNEL_RETRY_MS
+			};
+		}
+
+		while (collaborationCache.size >= MAX_CACHED_CHANNELS) {
+			const coldest = collaborationCache.keys().next().value;
+			if (coldest === undefined || coldest === channelId) break;
+			collaborationCache.delete(coldest);
+		}
+
+		collaborationCache.set(channelId, loaded);
+
+		return loaded;
+	})().finally(() => collaborationsInFlight.delete(channelId));
+
+	collaborationsInFlight.set(channelId, request);
+
+	return request;
+}
+
+/**
+ * A channel's collaborations, from memory where possible, on the same terms as
+ * its own videos: stale is served and refreshed behind, and nothing cached is
+ * waited for only so long.
+ */
+async function loadCollaborations(channelId: string): Promise<BrowseVideo[]> {
+	const cached = collaborationCache.get(channelId);
+
+	if (!cached) {
+		const fetched = await withDeadline(
+			fetchCollaborations(channelId).then((loaded) => ({ ...loaded, next: null })),
+			{ videos: [], next: null, at: 0 }
+		);
+
+		return fetched.videos;
+	}
+
+	if (Date.now() - cached.at >= FEED_CACHE_MS) {
+		void fetchCollaborations(channelId);
+	}
+
+	collaborationCache.delete(channelId);
+	collaborationCache.set(channelId, cached);
+
+	return cached.videos;
+}
+
 /**
  * Pulls one more page into a channel's list, if it has one.
  *
@@ -982,15 +1320,24 @@ function byRecency(now: number): (a: BrowseVideo, b: BrowseVideo) => number {
  * anything else. Rather than let it fall into channel order - every video of
  * one channel, then every video of the next - undated videos are dealt out one
  * per channel, which is the same shape a dated feed ends up with.
+ *
+ * A video can arrive more than once: a collaboration is in its uploader's list
+ * and in the collaborations of everybody who made it. The first copy is kept,
+ * so whatever is passed first wins - the channels' own lists go before their
+ * collaborations, since an uploader's copy says more about the video.
  */
-function mergeChannels(channels: ChannelFeed[]): BrowseVideo[] {
+function mergeChannels(channels: { videos: BrowseVideo[] }[]): BrowseVideo[] {
 	const dated: BrowseVideo[] = [];
 	const undated: BrowseVideo[][] = [];
+	const seen = new Set<string>();
 
 	for (const channel of channels) {
 		const rest: BrowseVideo[] = [];
 
 		for (const video of channel.videos) {
+			if (seen.has(video.videoId)) continue;
+			seen.add(video.videoId);
+
 			if (isDated(video)) dated.push(video);
 			else rest.push(video);
 		}
@@ -1040,10 +1387,27 @@ export async function getFeed(
 	const queue = [...channelIds];
 	const loaded: { key: string; channel: ChannelFeed }[] = [];
 
+	// Only the videos tab has collaborations to add: they are not shorts, and
+	// a live collaboration is in the live tab of whoever is streaming it.
+	const collaborated: { videos: BrowseVideo[] }[] = [];
+	const collaborating: Promise<void>[] = [];
+
+	const firstPaint = Date.now() + FEED_FIRST_PAINT_MS;
+
 	const workers = Array.from({ length: Math.min(FEED_CONCURRENCY, queue.length) }, async () => {
 		for (;;) {
 			const channelId = queue.shift();
 			if (!channelId) return;
+
+			// Alongside the channel rather than behind it, so a slow shelf does
+			// not hold up the channels still queued.
+			if (kind === 'videos') {
+				collaborating.push(
+					loadCollaborations(channelId).then((videos) => {
+						collaborated.push({ videos });
+					})
+				);
+			}
 
 			loaded.push({
 				key: `${kind}:${channelId}`,
@@ -1058,14 +1422,19 @@ export async function getFeed(
 	// hold the screen blank for all of them, the answer goes out with whatever
 	// has arrived; the rest carry on filling the cache and are in the next one,
 	// which is a second away rather than eight.
-	await Promise.race([
-		Promise.all(workers),
+	const untilFirstPaint = () =>
 		new Promise((resolve) => {
-			setTimeout(resolve, FEED_FIRST_PAINT_MS).unref?.();
-		})
-	]);
+			setTimeout(resolve, Math.max(0, firstPaint - Date.now())).unref?.();
+		});
+
+	await Promise.race([Promise.all(workers), untilFirstPaint()]);
+
+	// Whatever collaborations are ready in the time left. Cached ones are
+	// ready at once; the rest are in the next answer, like a slow channel.
+	await Promise.race([Promise.all(collaborating), untilFirstPaint()]);
 
 	const answered = [...loaded];
+	const collaborations = [...collaborated];
 	const partial = answered.length < channelIds.length;
 
 	// Channels that could not be read at all - not channels that simply have
@@ -1075,7 +1444,8 @@ export async function getFeed(
 		.filter((entry) => entry.channel.failed === true)
 		.map((entry) => entry.key.slice(entry.key.indexOf(':') + 1));
 
-	const merged = () => mergeChannels(answered.map((entry) => entry.channel));
+	const merged = () =>
+		mergeChannels([...answered.map((entry) => entry.channel), ...collaborations]);
 
 	let videos = merged();
 

@@ -61,6 +61,22 @@ export type BrowseVideo = Pick<
 	/** The one picture to show, picked here so a device need not choose. */
 	thumbnail: string | null;
 	liveNow: boolean;
+	/**
+	 * Made by more than one channel together.
+	 *
+	 * Only that it is one: which channels they are takes a request of its own
+	 * (see `BrowseCollaborator`), and is only worth making when somebody asks.
+	 */
+	collaboration: boolean;
+};
+
+/** One of the channels that made a video together. */
+export type BrowseCollaborator = {
+	channelId: string;
+	name: string;
+	/** The channel's handle and subscriber count, as YouTube writes them. */
+	subtitle: string;
+	thumbnail: string | null;
 };
 
 /**
