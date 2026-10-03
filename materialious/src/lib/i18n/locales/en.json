@@ -132,7 +132,9 @@
 	},
 	"thumbnail": {
 		"live": "LIVE",
-		"failedToLoadImage": "Failed to load image"
+		"failedToLoadImage": "Failed to load image",
+		"collaborators": "Collaborators",
+		"collaboratorsFailed": "Could not load who made this"
 	},
 	"pages": {
 		"home": "Home",

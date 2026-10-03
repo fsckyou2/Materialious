@@ -34,6 +34,9 @@ export interface VideoBase {
 	// Means it was given preference in rankings due to
 	// a users settings
 	promotedBy?: 'favourited';
+	// Made by more than one channel together. Which channels takes a request
+	// of its own, made when somebody opens the list.
+	collaboration?: boolean;
 }
 
 export interface ResolvedUrl {

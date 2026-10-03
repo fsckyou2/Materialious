@@ -415,6 +415,8 @@
 					<AuthorAvatar
 						author={video.author}
 						authorId={'authorId' in video ? video.authorId : ''}
+						videoId={video.videoId}
+						collaboration={'collaboration' in video && video.collaboration === true}
 					/>
 				{/if}
 				<div class="author-details" class:not-sideways={!sideways}>
