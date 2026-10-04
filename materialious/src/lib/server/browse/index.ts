@@ -878,6 +878,14 @@ const FEED_CACHE_MS = 30 * 60 * 1000;
 const COLLABORATIONS_CACHE_MS = 2 * 60 * 60 * 1000;
 
 /**
+ * How long a channel whose collaborations could not be read is left before
+ * asking again. Far longer than a channel's own videos get: when the pages
+ * these come from fail, they fail for many channels at once, and asking every
+ * couple of minutes for each is what keeps them failing.
+ */
+const FAILED_COLLABORATIONS_RETRY_MS = 30 * 60 * 1000;
+
+/**
  * How many channels are fetched at once.
  *
  * Only a feed with nothing cached pays this: a warm one is served from memory
@@ -931,52 +939,57 @@ const CHANNEL_REQUESTS_AT_ONCE = 6;
 const COLLABORATION_REQUESTS_AT_ONCE = 2;
 
 /**
- * How long every request waits once YouTube has said to slow down, and what
- * counts as saying so: a "too many requests", or a run of failures close
- * together. It has also been seen to answer an address it is tired of with a
- * wave of plain errors instead. Asking again straight away is what keeps it
- * tired, so everything stops for a while.
+ * How long requests wait once YouTube has said to slow down, and what counts
+ * as saying so: a "too many requests", or a run of failures close together.
+ * It has also been seen to answer an address it is tired of with a wave of
+ * plain errors instead. Asking again straight away is what keeps it tired, so
+ * that kind of request stops for a while.
  */
 const COOL_OFF_MS = 30_000;
 const FAILURES_BEFORE_COOLING_OFF = 5;
 const FAILURE_WINDOW_MS = 10_000;
 
-let coolingOffUntil = 0;
-const recentFailures: number[] = [];
-
-function noteFailedRequest(error: unknown): void {
-	// A channel that is gone fails every time, and says nothing about load.
-	if (isGone(error)) return;
-
-	const now = Date.now();
-
-	recentFailures.push(now);
-	while (recentFailures.length && recentFailures[0] < now - FAILURE_WINDOW_MS) {
-		recentFailures.shift();
-	}
-
-	const message = error instanceof Error ? error.message : String(error);
-	const tooMany =
-		/status code 429/.test(message) || recentFailures.length >= FAILURES_BEFORE_COOLING_OFF;
-
-	if (tooMany && now >= coolingOffUntil) {
-		coolingOffUntil = now + COOL_OFF_MS;
-		recentFailures.length = 0;
-		console.warn(`browse: YouTube is refusing requests; pausing for ${COOL_OFF_MS / 1000}s`);
-	}
-}
-
 /**
  * Runs work no more than so many at a time, the rest waiting in turn, and not
  * at all while cooling off.
+ *
+ * Each kind of request cools off on its own. YouTube refuses them separately -
+ * the television pages collaborations come from have failed in runs while
+ * channels' own videos answered every time - and pausing everything for the
+ * sake of the extra held up the feed itself for over a minute.
  *
  * A finished piece hands its place straight to the next in line rather than
  * giving it up, so nothing that arrives in between can take it and run one
  * over the limit.
  */
-function limitedTo(atOnce: number) {
+function limitedTo(atOnce: number, kind: string) {
 	let running = 0;
 	const waiting: (() => void)[] = [];
+
+	let coolingOffUntil = 0;
+	const recentFailures: number[] = [];
+
+	function noteFailedRequest(error: unknown): void {
+		// A channel that is gone fails every time, and says nothing about load.
+		if (isGone(error)) return;
+
+		const now = Date.now();
+
+		recentFailures.push(now);
+		while (recentFailures.length && recentFailures[0] < now - FAILURE_WINDOW_MS) {
+			recentFailures.shift();
+		}
+
+		const message = error instanceof Error ? error.message : String(error);
+		const tooMany =
+			/status code 429/.test(message) || recentFailures.length >= FAILURES_BEFORE_COOLING_OFF;
+
+		if (tooMany && now >= coolingOffUntil) {
+			coolingOffUntil = now + COOL_OFF_MS;
+			recentFailures.length = 0;
+			console.warn(`browse: YouTube is refusing ${kind}; pausing them for ${COOL_OFF_MS / 1000}s`);
+		}
+	}
 
 	return async function <T>(work: () => Promise<T>): Promise<T> {
 		if (running < atOnce) running += 1;
@@ -1001,8 +1014,8 @@ function limitedTo(atOnce: number) {
 	};
 }
 
-const channelRequest = limitedTo(CHANNEL_REQUESTS_AT_ONCE);
-const collaborationRequest = limitedTo(COLLABORATION_REQUESTS_AT_ONCE);
+const channelRequest = limitedTo(CHANNEL_REQUESTS_AT_ONCE, 'channels');
+const collaborationRequest = limitedTo(COLLABORATION_REQUESTS_AT_ONCE, 'collaborations');
 
 /** One channel that could not be fetched, and what it said. */
 export type ChannelFailure = {
@@ -1272,8 +1285,8 @@ async function fetchCollaborations(channelId: string): Promise<Collaborations> {
 			};
 		} catch (error) {
 			// Collaborations are extra: a channel whose shelf cannot be read
-			// still has its own videos in the feed. It is tried again in a
-			// couple of minutes, the same as a channel that failed outright.
+			// still has its own videos in the feed. It is tried again after
+			// FAILED_COLLABORATIONS_RETRY_MS, keeping whatever it had before.
 			console.warn(
 				`browse: collaborations for ${channelId} failed:`,
 				error instanceof Error ? error.message : String(error)
@@ -1281,7 +1294,7 @@ async function fetchCollaborations(channelId: string): Promise<Collaborations> {
 
 			loaded = {
 				videos: collaborationCache.get(channelId)?.videos ?? [],
-				at: Date.now() - COLLABORATIONS_CACHE_MS + FAILED_CHANNEL_RETRY_MS
+				at: Date.now() - COLLABORATIONS_CACHE_MS + FAILED_COLLABORATIONS_RETRY_MS
 			};
 		}
 
