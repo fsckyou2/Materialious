@@ -8,15 +8,15 @@ import { get } from 'svelte/store';
 export type SupportedVideos = (VideoBase | Video | PlaylistPageVideo)[];
 
 /**
- * How long to leave the instance to finish, and how many times to look back.
+ * How long to leave the instance to finish before each look back.
  *
  * An answer is also partial while channels it served from an old copy are
  * being fetched again, and opening the page after a while away can mean every
- * one of a hundred and sixty at once. Four looks is long enough for that to
- * land, and still bounded.
+ * one of a hundred and sixty at once - which the instance does a few at a
+ * time, so YouTube does not refuse it. The looks spread out over most of a
+ * minute to see that land, and then stop.
  */
-const PARTIAL_RETRY_MS = 4000;
-const PARTIAL_ATTEMPTS = 4;
+const PARTIAL_RETRY_DELAYS_MS = [4000, 4000, 8000, 8000, 16000];
 
 /**
  * How long a screen can sit unseen before coming back to it asks for the
@@ -128,15 +128,18 @@ export async function addToSubscriptionFeed(videos: SupportedVideos): Promise<vo
  * missing for ever, and asking without end is how a screen ends up reloading
  * itself every few seconds.
  */
-function askAgainShortly(attempt = 1): void {
+function askAgainShortly(attempt = 0): void {
+	const delay = PARTIAL_RETRY_DELAYS_MS[attempt];
+	if (delay === undefined) return;
+
 	setTimeout(async () => {
 		const feed = await getFeed(FEED_PAGE_SIZE, 1).catch(() => null);
 		if (!feed) return;
 
 		await remember([...feed.notifications, ...feed.videos]);
 
-		if (feed.partial && attempt < PARTIAL_ATTEMPTS) askAgainShortly(attempt + 1);
-	}, PARTIAL_RETRY_MS);
+		if (feed.partial) askAgainShortly(attempt + 1);
+	}, delay);
 }
 
 /**

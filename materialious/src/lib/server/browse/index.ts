@@ -872,6 +872,12 @@ export async function getCollaborators(videoId: string): Promise<BrowseCollabora
 const FEED_CACHE_MS = 30 * 60 * 1000;
 
 /**
+ * The same for a channel's collaborations, which are the extra: a request
+ * each as well, and much the rarer, so they are asked about less often.
+ */
+const COLLABORATIONS_CACHE_MS = 2 * 60 * 60 * 1000;
+
+/**
  * How many channels are fetched at once.
  *
  * Only a feed with nothing cached pays this: a warm one is served from memory
@@ -905,6 +911,98 @@ const FAILED_CHANNEL_RETRY_MS = 2 * 60 * 1000;
 
 /** How long to wait before giving a channel that failed a second chance. */
 const CHANNEL_RETRY_MS = 400;
+
+/**
+ * How many requests for channels, and for their collaborations, may be with
+ * YouTube at once, across everybody's feeds.
+ *
+ * Each feed's own fetching was already bounded, but a channel refreshed behind
+ * an answer, or still loading after its feed gave up waiting, was not - and a
+ * feed opened after half an hour away refreshes every channel at once. With a
+ * collaborations shelf beside each, a hundred and sixty channels became three
+ * hundred and twenty requests inside a second, and YouTube answered a hundred
+ * and eleven of them with "too many requests". Those channels were then
+ * missing from the feed until they were tried again.
+ *
+ * Collaborations get the smaller share, so they never hold a channel's own
+ * videos up: they are the extra, and arriving a little later costs nothing.
+ */
+const CHANNEL_REQUESTS_AT_ONCE = 6;
+const COLLABORATION_REQUESTS_AT_ONCE = 2;
+
+/**
+ * How long every request waits once YouTube has said to slow down, and what
+ * counts as saying so: a "too many requests", or a run of failures close
+ * together. It has also been seen to answer an address it is tired of with a
+ * wave of plain errors instead. Asking again straight away is what keeps it
+ * tired, so everything stops for a while.
+ */
+const COOL_OFF_MS = 30_000;
+const FAILURES_BEFORE_COOLING_OFF = 5;
+const FAILURE_WINDOW_MS = 10_000;
+
+let coolingOffUntil = 0;
+const recentFailures: number[] = [];
+
+function noteFailedRequest(error: unknown): void {
+	// A channel that is gone fails every time, and says nothing about load.
+	if (isGone(error)) return;
+
+	const now = Date.now();
+
+	recentFailures.push(now);
+	while (recentFailures.length && recentFailures[0] < now - FAILURE_WINDOW_MS) {
+		recentFailures.shift();
+	}
+
+	const message = error instanceof Error ? error.message : String(error);
+	const tooMany =
+		/status code 429/.test(message) || recentFailures.length >= FAILURES_BEFORE_COOLING_OFF;
+
+	if (tooMany && now >= coolingOffUntil) {
+		coolingOffUntil = now + COOL_OFF_MS;
+		recentFailures.length = 0;
+		console.warn(`browse: YouTube is refusing requests; pausing for ${COOL_OFF_MS / 1000}s`);
+	}
+}
+
+/**
+ * Runs work no more than so many at a time, the rest waiting in turn, and not
+ * at all while cooling off.
+ *
+ * A finished piece hands its place straight to the next in line rather than
+ * giving it up, so nothing that arrives in between can take it and run one
+ * over the limit.
+ */
+function limitedTo(atOnce: number) {
+	let running = 0;
+	const waiting: (() => void)[] = [];
+
+	return async function <T>(work: () => Promise<T>): Promise<T> {
+		if (running < atOnce) running += 1;
+		else await new Promise<void>((resolve) => waiting.push(resolve));
+
+		try {
+			while (Date.now() < coolingOffUntil) {
+				await new Promise((resolve) => {
+					setTimeout(resolve, coolingOffUntil - Date.now()).unref?.();
+				});
+			}
+
+			return await work();
+		} catch (error) {
+			noteFailedRequest(error);
+			throw error;
+		} finally {
+			const next = waiting.shift();
+			if (next) next();
+			else running -= 1;
+		}
+	};
+}
+
+const channelRequest = limitedTo(CHANNEL_REQUESTS_AT_ONCE);
+const collaborationRequest = limitedTo(COLLABORATION_REQUESTS_AT_ONCE);
 
 /** One channel that could not be fetched, and what it said. */
 export type ChannelFailure = {
@@ -961,7 +1059,7 @@ function isGone(error: unknown): boolean {
 
 async function fetchWithOneRetry(channelId: string, kind: FeedKind) {
 	try {
-		return await getChannel(channelId, kind);
+		return await channelRequest(() => getChannel(channelId, kind));
 	} catch (error) {
 		if (isGone(error)) throw error;
 
@@ -969,7 +1067,7 @@ async function fetchWithOneRetry(channelId: string, kind: FeedKind) {
 			setTimeout(resolve, CHANNEL_RETRY_MS).unref?.();
 		});
 
-		return getChannel(channelId, kind);
+		return channelRequest(() => getChannel(channelId, kind));
 	}
 }
 
@@ -1168,7 +1266,10 @@ async function fetchCollaborations(channelId: string): Promise<Collaborations> {
 		let loaded: Collaborations;
 
 		try {
-			loaded = { videos: await getCollaborations(channelId), at: Date.now() };
+			loaded = {
+				videos: await collaborationRequest(() => getCollaborations(channelId)),
+				at: Date.now()
+			};
 		} catch (error) {
 			// Collaborations are extra: a channel whose shelf cannot be read
 			// still has its own videos in the feed. It is tried again in a
@@ -1180,7 +1281,7 @@ async function fetchCollaborations(channelId: string): Promise<Collaborations> {
 
 			loaded = {
 				videos: collaborationCache.get(channelId)?.videos ?? [],
-				at: Date.now() - FEED_CACHE_MS + FAILED_CHANNEL_RETRY_MS
+				at: Date.now() - COLLABORATIONS_CACHE_MS + FAILED_CHANNEL_RETRY_MS
 			};
 		}
 
@@ -1217,7 +1318,7 @@ async function loadCollaborations(channelId: string): Promise<BrowseVideo[]> {
 		return fetched.videos;
 	}
 
-	if (Date.now() - cached.at >= FEED_CACHE_MS) {
+	if (Date.now() - cached.at >= COLLABORATIONS_CACHE_MS) {
 		void fetchCollaborations(channelId);
 	}
 
@@ -1474,11 +1575,11 @@ export async function getFeed(
 	// away, and had to reload - sometimes twice, for the channels still being
 	// fetched the first time. Anything of theirs still in flight now counts
 	// the same as a channel that had not answered at all.
-	const refreshing = channelIds.some(
-		(channelId) =>
-			inFlight.has(`${kind}:${channelId}`) ||
-			(kind === 'videos' && collaborationsInFlight.has(channelId))
-	);
+	//
+	// Collaborations being fetched do not: they come a few at a time, and a
+	// feed that called itself incomplete for as long as they took would have
+	// screens asking again for a minute over what is only ever the extra.
+	const refreshing = channelIds.some((channelId) => inFlight.has(`${kind}:${channelId}`));
 
 	return {
 		videos: videos.slice(offset, offset + limit).map((video) => agedAsOf(video, asOf)),
