@@ -187,11 +187,13 @@ export type FeedPage = {
 	/** Whether asking for the next offset could return anything. */
 	hasMore: boolean;
 	/**
-	 * Whether some channels had not answered in time to be in this.
+	 * Whether a newer answer is on its way: some channels had not answered in
+	 * time to be in this, or were served from an old copy that is being
+	 * fetched again right now.
 	 *
-	 * They are still being fetched, so asking again shortly returns the lot. A
-	 * device that shows this feed can use it to come back rather than leaving a
-	 * viewer looking at a feed quietly missing a few channels.
+	 * Either way asking again shortly returns more. A device that shows this
+	 * feed can use it to come back rather than leaving a viewer looking at a
+	 * feed that is quietly short, or quietly half an hour old.
 	 */
 	partial: boolean;
 	/**

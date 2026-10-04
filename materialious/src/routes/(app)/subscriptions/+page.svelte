@@ -2,7 +2,8 @@
 	import { getFeed } from '$lib/api/index';
 	import type { PlaylistPageVideo, Video, VideoBase } from '$lib/api/model';
 	import { feedCacheStore, feedLoadingStore } from '$lib/store';
-	import { addToSubscriptionFeed } from '$lib/subscriptionFeed';
+	import { addToSubscriptionFeed, refreshWhenSeenAgain } from '$lib/subscriptionFeed';
+	import { onMount } from 'svelte';
 	import InfiniteLoading, { type InfiniteEvent } from 'svelte-infinite-loading';
 	import ItemsList from '$lib/components/layout/ItemsList.svelte';
 	import { resolve } from '$app/paths';
@@ -10,6 +11,9 @@
 	import PageLoading from '$lib/components/PageLoading.svelte';
 
 	let currentPage = 1;
+
+	// A feed left open in a background tab catches up when it is looked at.
+	onMount(refreshWhenSeenAgain);
 	let videos: (VideoBase | Video | PlaylistPageVideo)[] = $derived($feedCacheStore.subscription);
 
 	async function loadMore(event: InfiniteEvent) {

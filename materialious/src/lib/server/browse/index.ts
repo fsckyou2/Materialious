@@ -1467,12 +1467,25 @@ export async function getFeed(
 	// what a device is told is as of now.
 	const asOf = Date.now();
 
+	// A channel held for longer than its half hour is handed out as it was and
+	// fetched again behind the answer, which used to say nothing about it. So
+	// somebody opening the page after an evening away was shown the evening's
+	// feed, with nothing to tell their screen that a newer one was seconds
+	// away, and had to reload - sometimes twice, for the channels still being
+	// fetched the first time. Anything of theirs still in flight now counts
+	// the same as a channel that had not answered at all.
+	const refreshing = channelIds.some(
+		(channelId) =>
+			inFlight.has(`${kind}:${channelId}`) ||
+			(kind === 'videos' && collaborationsInFlight.has(channelId))
+	);
+
 	return {
 		videos: videos.slice(offset, offset + limit).map((video) => agedAsOf(video, asOf)),
 		hasMore: videos.length > offset + limit || answered.some((entry) => entry.channel.next),
 		// Says this is what had arrived in time, not everything there is: a
 		// client that asks again shortly gets the rest.
-		partial,
+		partial: partial || refreshing,
 		unavailable
 	};
 }
