@@ -7,15 +7,31 @@ import { get } from 'svelte/store';
 
 export type SupportedVideos = (VideoBase | Video | PlaylistPageVideo)[];
 
-/** How long to leave the instance to finish, and how many times to look back. */
+/**
+ * How long to leave the instance to finish, and how many times to look back.
+ *
+ * An answer is also partial while channels it served from an old copy are
+ * being fetched again, and opening the page after a while away can mean every
+ * one of a hundred and sixty at once. Four looks is long enough for that to
+ * land, and still bounded.
+ */
 const PARTIAL_RETRY_MS = 4000;
-const PARTIAL_ATTEMPTS = 2;
+const PARTIAL_ATTEMPTS = 4;
+
+/**
+ * How long a screen can sit unseen before coming back to it asks for the
+ * newest videos. A tab left open is never reloaded, so nothing else would.
+ */
+const STALE_AFTER_HIDDEN_MS = 5 * 60 * 1000;
 
 /** How many videos one page of the feed holds. */
 const FEED_PAGE_SIZE = 100;
 
 /** The refresh in progress, so that two callers share one. */
 let refreshing: Promise<void> | undefined;
+
+/** When the feed was last asked for, to tell a glance away from an evening. */
+let lastRefreshedAt = 0;
 
 async function sortVideosByFavourites(videos: SupportedVideos): Promise<SupportedVideos> {
 	if (!window.indexedDB) return videos;
@@ -138,6 +154,8 @@ export function refreshSubscriptionFeed(): Promise<void> {
 	// The page's own load and a press on the logo can arrive together, and the
 	// two of them asking separately would fetch the same feed twice.
 	refreshing ??= (async () => {
+		lastRefreshedAt = Date.now();
+
 		const feed = await getFeed(FEED_PAGE_SIZE, 1);
 
 		await remember([...feed.notifications, ...feed.videos]);
@@ -148,6 +166,27 @@ export function refreshSubscriptionFeed(): Promise<void> {
 	});
 
 	return refreshing;
+}
+
+/**
+ * Refreshes the feed when somebody comes back to a screen they left long
+ * enough ago for it to be out of date.
+ *
+ * @returns a function that stops listening, for when the feed is closed.
+ */
+export function refreshWhenSeenAgain(): () => void {
+	const onVisibilityChange = () => {
+		if (document.visibilityState !== 'visible') return;
+		if (Date.now() - lastRefreshedAt < STALE_AFTER_HIDDEN_MS) return;
+
+		refreshSubscriptionFeed().catch(() => {
+			// What is on screen stays, and the next look tries again.
+		});
+	};
+
+	document.addEventListener('visibilitychange', onVisibilityChange);
+
+	return () => document.removeEventListener('visibilitychange', onVisibilityChange);
 }
 
 /**
