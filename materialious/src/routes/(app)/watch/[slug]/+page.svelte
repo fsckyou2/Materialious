@@ -177,7 +177,7 @@
 		returnYTDislikes = playerResult.returnYTDislikes;
 		playerReady = true;
 
-		if (data.video && !hasPremiere() && !data.video.premium && (!$playerState || $playerState.data.video.videoId !== data.video.videoId)) {
+		if (data.video && !hasPremiere() && !data.video.premium && !data.video.unplayable && (!$playerState || $playerState.data.video.videoId !== data.video.videoId)) {
 			playerLoadingStore.set(false);
 			playerState.set({
 				data: data
@@ -350,6 +350,27 @@
 					<h6 class="no-margin no-padding">
 						{premiereTime}
 					</h6>
+				</article>
+				<div class="space"></div>
+			{:else if data.video.unplayable}
+				<!-- YouTube's own words for why it will not play this, rather than a
+				     thumbnail that looks like it is about to start and never does. -->
+				<article class="video-placeholder unplayable">
+					<i class="large">block</i>
+					<p class="bold">{$_('player.unplayable.title')}</p>
+					{#if data.video.unplayable.reason}
+						<h6 class="no-margin no-padding">{data.video.unplayable.reason}</h6>
+					{/if}
+					{#if data.video.unplayable.subreason}
+						<p>{data.video.unplayable.subreason}</p>
+					{/if}
+					{#if data.video.unplayable.signInRequired}
+						<p class="small-text">
+							{data.video.unplayable.signedInTried
+								? $_('player.unplayable.signedInRefused')
+								: $_('player.unplayable.signInHint')}
+						</p>
+					{/if}
 				</article>
 				<div class="space"></div>
 			{/if}
@@ -717,6 +738,17 @@
 
 	.video-placeholder {
 		height: 50vh;
+	}
+
+	.unplayable {
+		gap: 0.5rem;
+		padding: 1rem;
+		text-align: center;
+	}
+
+	.unplayable p {
+		margin: 0;
+		max-width: 40rem;
 	}
 
 	.video-actions button {

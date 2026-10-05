@@ -14,6 +14,7 @@
 	import InternalAccount from './InternalAccount.svelte';
 	import Admin from './Admin.svelte';
 	import Devices from './Devices.svelte';
+	import YouTubeAccount from './YouTubeAccount.svelte';
 	import { getNextFocus } from '@bbc/tv-lrud-spatial';
 	import Filters from './Filters.svelte';
 	import ExportImport from './ExportImport.svelte';
@@ -32,6 +33,7 @@
 		| 'account'
 		| 'admin'
 		| 'devices'
+		| 'youtube'
 		| 'filters'
 		| 'export'
 		| 'theme'
@@ -119,6 +121,15 @@
 				icon: 'person',
 				component: InternalAccount
 			});
+			// Kept with the account, encrypted with its key, so it needs one.
+			if (!tabs.find((tab) => tab.id === 'youtube')) {
+				tabs.splice(tabs.length - 1, 0, {
+					id: 'youtube',
+					label: $_('layout.youtubeAccount.title'),
+					icon: 'smart_display',
+					component: YouTubeAccount
+				});
+			}
 			// Televisions are paired to an account, so this belongs with it.
 			if (!tabs.find((tab) => tab.id === 'devices')) {
 				tabs.splice(tabs.length - 1, 0, {
@@ -148,7 +159,12 @@
 			});
 		} else {
 			tabs = tabs.filter((tab) => {
-				return tab.id !== 'account' && tab.id !== 'admin' && tab.id !== 'devices';
+				return (
+					tab.id !== 'account' &&
+					tab.id !== 'admin' &&
+					tab.id !== 'devices' &&
+					tab.id !== 'youtube'
+				);
 			});
 		}
 	});

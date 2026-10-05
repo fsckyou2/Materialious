@@ -10,6 +10,12 @@ import { parse as tldParse } from 'tldts';
 import { USER_AGENT } from 'bgutils-js/utils';
 import sodium from 'libsodium-wrappers-sumo';
 
+/**
+ * The cookies of a signed-in youtube.com session, sent under a name of their
+ * own because a browser will not let a page send a Cookie header.
+ */
+const YOUTUBE_COOKIE_HEADER = 'x-materialious-youtube-cookie';
+
 const ALLOWED_HEADERS = [
 	'Origin',
 	'X-Requested-With',
@@ -29,8 +35,14 @@ const ALLOWED_HEADERS = [
 	'Range',
 	'Referer',
 	'Cookie',
-	BASE64_BODY_HEADER
+	BASE64_BODY_HEADER,
+	YOUTUBE_COOKIE_HEADER
 ].join(', ');
+
+function isYouTubeHost(host: string): boolean {
+	const name = host.toLowerCase().replace(/:\d+$/, '');
+	return name === 'youtube.com' || name.endsWith('.youtube.com');
+}
 
 const allowedBaseDomains: string[] = [
 	'youtube.com',
@@ -194,6 +206,12 @@ async function proxyRequest(
 	}
 
 	const requestHeaders = new Headers(request.headers);
+
+	// Taken off every request, whatever it is for, and only put back as a
+	// cookie for YouTube itself. A signed-in Google session is not something to
+	// hand to a video server, an image host, or anything else on the list.
+	const youtubeCookie = requestHeaders.get(YOUTUBE_COOKIE_HEADER);
+	requestHeaders.delete(YOUTUBE_COOKIE_HEADER);
 	requestHeaders.set('host', urlToProxyObj.host);
 	requestHeaders.set('origin', urlToProxyObj.origin);
 	requestHeaders.set('user-agent', USER_AGENT);
@@ -211,6 +229,10 @@ async function proxyRequest(
 		'content-length'
 	]) {
 		requestHeaders.delete(key);
+	}
+
+	if (youtubeCookie && isYouTubeHost(urlToProxyObj.host)) {
+		requestHeaders.set('cookie', youtubeCookie);
 	}
 
 	const requestOptions: RequestInit = {

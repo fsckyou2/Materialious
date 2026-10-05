@@ -59,6 +59,7 @@ export {
 	rawMasterKeyStore,
 	watchHistoryEnabledStore,
 	poTokenCacheStore,
+	youtubeCookieStore,
 	filterContentListStore,
 	filterContentUrlStore,
 	filterContentUrlAutoUpdateStore,

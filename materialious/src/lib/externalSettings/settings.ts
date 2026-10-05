@@ -58,7 +58,8 @@ import {
 	interfaceBorderRadiusStore,
 	interfacePreserveTranslation,
 	interfaceMobileBackButtonStore,
-	subtitleSettings
+	subtitleSettings,
+	youtubeCookieStore
 } from '$lib/store';
 import { isOwnBackend } from '$lib/shared';
 import { SUPPORTED_THEME_KEYS } from '$lib/shared/theme';
@@ -327,6 +328,14 @@ if (isOwnBackend()) {
 		store: invidiousAuthStore,
 		schema: zAuth,
 		serialize: JSON.stringify,
+		excludeFromBookmarklet: true
+	});
+	// A signed-in Google session: kept with the account, where it is stored
+	// encrypted with a key the instance never sees, and never put in a link.
+	persistedStores.push({
+		name: 'youtubeCookie',
+		store: youtubeCookieStore,
+		schema: zString,
 		excludeFromBookmarklet: true
 	});
 	persistedStores.push({

@@ -67,7 +67,8 @@ export {
 	rawMasterKeyStore,
 	watchHistoryEnabledStore,
 	poTokenCacheStore,
-	isAndroidTvStore
+	isAndroidTvStore,
+	youtubeCookieStore
 } from './misc';
 export {
 	sponsorBlockStore,
