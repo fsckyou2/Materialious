@@ -16,6 +16,7 @@ import { get } from 'svelte/store';
 import type { Types } from 'youtubei.js';
 import { Innertube, Utils, YT, YTNodes, Platform } from 'youtubei.js';
 import { getInnertube } from '.';
+import { getSignedInInnertube } from './account';
 import { isUnrestrictedPlatform } from '$lib/misc';
 import { webPoTokenMinter } from '$lib/web/youtube/minter';
 import { associateAvatar } from '$lib/thumbnail';
@@ -35,25 +36,78 @@ export interface VideoIntermediate {
 
 const videoIntermediateCache = new Map<string, VideoIntermediate>();
 
+function playabilityStatusOf(response: import('youtubei.js').ApiResponse): string | undefined {
+	return (response.data as { playabilityStatus?: { status?: string } } | undefined)
+		?.playabilityStatus?.status;
+}
+
+/**
+ * What YouTube said when it would not play a video, for saying so on the page.
+ *
+ * A premiere that has not started and a members-only video are refusals too,
+ * but each already has a screen of its own, so they are left to those.
+ */
+function refusalOf(video: YT.VideoInfo, signedInTried: boolean): VideoPlay['unplayable'] {
+	const playability = video.playability_status;
+	if (!playability || playability.status === 'OK') return undefined;
+	if (video.basic_info.is_upcoming) return undefined;
+	if ((video as any)?.playability_status?.error_screen?.offer_id === 'sponsors_only_video') {
+		return undefined;
+	}
+
+	const errorScreen = playability.error_screen as
+		| { subreason?: { toString(): string } }
+		| undefined;
+	const subreason = errorScreen?.subreason?.toString() ?? '';
+
+	return {
+		status: playability.status,
+		reason: playability.reason || '',
+		subreason: subreason !== playability.reason ? subreason : '',
+		signInRequired: playability.status === 'LOGIN_REQUIRED',
+		signedInTried
+	};
+}
+
 export async function getVideoPageYTjs(videoId: string): Promise<VideoPlay> {
 	if (!isUnrestrictedPlatform()) {
 		throw new Error('Platform not supported');
 	}
 
-	const innertube = await getInnertube();
+	let innertube = await getInnertube();
 
 	const clientPlaybackNonce = Utils.generateRandomString(16);
 
 	const watchEndpoint = new YTNodes.NavigationEndpoint({ watchEndpoint: { videoId } });
-	const rawPlayerResponse = await watchEndpoint.call(innertube.actions, {
-		contentCheckOk: true,
-		racyCheckOk: true,
-		playbackContext: {
-			contentPlaybackContext: {
-				signatureTimestamp: innertube.session.player?.signature_timestamp
+	const askForPlayer = (session: Innertube) =>
+		watchEndpoint.call(session.actions, {
+			contentCheckOk: true,
+			racyCheckOk: true,
+			playbackContext: {
+				contentPlaybackContext: {
+					signatureTimestamp: session.session.player?.signature_timestamp
+				}
 			}
+		});
+
+	let rawPlayerResponse = await askForPlayer(innertube);
+
+	// Some videos YouTube plays only to somebody signed in - most often because
+	// they are age-restricted. Those, and only those, are asked for again as the
+	// saved account, which then plays them too: everything else stays anonymous,
+	// so the account is told about no more than it has to be.
+	let signedInTried = false;
+
+	if (playabilityStatusOf(rawPlayerResponse) === 'LOGIN_REQUIRED') {
+		const signedIn = await getSignedInInnertube().catch(() => undefined);
+
+		if (signedIn) {
+			signedInTried = true;
+			innertube = signedIn;
+			rawPlayerResponse = await askForPlayer(signedIn);
 		}
-	});
+	}
+
 	const rawNextResponse = await watchEndpoint.call(innertube.actions, {
 		override_endpoint: '/next'
 	});
@@ -188,6 +242,7 @@ export async function getVideoPageYTjs(videoId: string): Promise<VideoPlay> {
 		premium: (video as any)?.playability_status?.error_screen?.offer_id === 'sponsors_only_video',
 		storyboards: storyboard,
 		isUpcoming: video?.playability_status?.status !== 'OK',
+		unplayable: refusalOf(video, signedInTried),
 		videoId: videoId,
 		videoThumbnails: video.basic_info.thumbnail as Thumbnail[],
 		author: video.basic_info.author || 'Unknown',
@@ -239,7 +294,10 @@ export async function continueVideoPlayerYTjs(videoId: string): Promise<{
 			break;
 	}
 
-	poTokenCacheStore.set(await platformMinter(requestKey, videoId));
+	// Nothing to play means nothing to ask a token for.
+	if (video.streaming_data) {
+		poTokenCacheStore.set(await platformMinter(requestKey, videoId));
+	}
 
 	let dashUri: string | undefined;
 

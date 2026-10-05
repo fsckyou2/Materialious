@@ -126,6 +126,16 @@ export interface VideoPlay extends Video {
 	storyboards?: StoryBoard[];
 	ytjs?: Ytjs;
 	fallbackPatch?: FallbackPatches;
+	/** Set when YouTube would not play the video, with what it gave as the reason. */
+	unplayable?: {
+		status: string;
+		reason: string;
+		subreason: string;
+		/** YouTube plays it only to somebody signed in, usually for age. */
+		signInRequired: boolean;
+		/** Whether the saved account was asked too, and was refused as well. */
+		signedInTried: boolean;
+	};
 }
 
 export interface StoryBoard {
