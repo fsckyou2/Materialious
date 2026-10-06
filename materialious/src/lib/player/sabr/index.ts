@@ -67,9 +67,15 @@ export async function injectSabr(
 				parsedInfo.streaming_data?.server_abr_streaming_url
 			)
 		);
+		// The reloaded response's own configuration, not the one playback
+		// started with: the server asked for a reload because that one no
+		// longer applies, and every request sent with it afterwards is refused
+		// as "sabr.malformed_config".
 		sabrAdapter.setUstreamerConfig(
-			video.ytjs.video.player_config?.media_common_config.media_ustreamer_request_config
-				?.video_playback_ustreamer_config
+			parsedInfo.player_config?.media_common_config.media_ustreamer_request_config
+				?.video_playback_ustreamer_config ??
+				video.ytjs.video.player_config?.media_common_config.media_ustreamer_request_config
+					?.video_playback_ustreamer_config
 		);
 	});
 

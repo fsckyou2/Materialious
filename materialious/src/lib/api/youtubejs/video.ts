@@ -61,6 +61,32 @@ function poTokenBinding(
 	return datasyncId?.split('||')[0] || videoId;
 }
 
+/** The pair `vb=1`, as it is encoded inside a format's xtags. */
+const VB_TAG = String.fromCharCode(0x0a, 0x02, 0x76, 0x62, 0x12, 0x01, 0x31);
+
+/**
+ * Whether a format is one of the `vb=1` variants that make the streaming
+ * server ask for the player response to be reloaded partway into a video.
+ *
+ * On its own that tag is written "CgcKAnZiEgEx", which is what used to be
+ * matched. A video with dubbed audio tracks has it alongside the language -
+ * "acont=original, lang=en-US, vb=1" - which encodes to something else
+ * entirely, so its original-language audio came through twice, the reload
+ * followed, and the video stopped.
+ */
+function hasVbTag(xtags: string | undefined): boolean {
+	if (!xtags) return false;
+
+	try {
+		const base64 = xtags.replace(/-/g, '+').replace(/_/g, '/');
+		const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, '=');
+
+		return atob(padded).includes(VB_TAG);
+	} catch {
+		return false;
+	}
+}
+
 function playabilityStatusOf(response: import('youtubei.js').ApiResponse): string | undefined {
 	return (response.data as { playabilityStatus?: { status?: string } } | undefined)
 		?.playabilityStatus?.status;
@@ -332,7 +358,7 @@ export async function continueVideoPlayerYTjs(videoId: string): Promise<{
 	// https://github.com/LuanRT/googlevideo/issues/42
 	if (video.streaming_data) {
 		video.streaming_data.adaptive_formats = video.streaming_data.adaptive_formats.filter(
-			(format) => format.xtags !== 'CgcKAnZiEgEx'
+			(format) => !hasVbTag(format.xtags)
 		);
 	}
 
