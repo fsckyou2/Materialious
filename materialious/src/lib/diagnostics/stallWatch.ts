@@ -64,7 +64,9 @@ async function report(context: StallContext, waitedMs: number): Promise<void> {
  * levels down. Serialising them as they are gives empty objects.
  */
 export function describeForReport(value: unknown, depth = 0): unknown {
-	if (depth > 4) return '…';
+	// Deep enough for a streaming refusal, whose reason sits at
+	// data[1].info.error.sabrError.type - six levels down.
+	if (depth > 8) return '…';
 	if (value === null || value === undefined) return value;
 	if (typeof value === 'string') return value.slice(0, 500);
 	if (typeof value !== 'object') return value;
