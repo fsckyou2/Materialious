@@ -36,6 +36,31 @@ export interface VideoIntermediate {
 
 const videoIntermediateCache = new Map<string, VideoIntermediate>();
 
+/**
+ * What a playback token has to be bound to.
+ *
+ * Anonymously that is the video. A signed-in session's token has to be bound
+ * to the account instead - its data sync id, which every signed-in response
+ * carries - and a token bound to the video is refused by the streaming server
+ * as "sabr.malformed_config" a few seconds into playback.
+ */
+function poTokenBinding(
+	innertube: Innertube,
+	playerResponse: import('youtubei.js').ApiResponse,
+	videoId: string
+): string {
+	if (!innertube.session.logged_in) return videoId;
+
+	const datasyncId = (
+		playerResponse.data as
+			| { responseContext?: { mainAppWebResponseContext?: { datasyncId?: string } } }
+			| undefined
+	)?.responseContext?.mainAppWebResponseContext?.datasyncId;
+
+	// Written "<account>||<delegated account>", where only the first is wanted.
+	return datasyncId?.split('||')[0] || videoId;
+}
+
 function playabilityStatusOf(response: import('youtubei.js').ApiResponse): string | undefined {
 	return (response.data as { playabilityStatus?: { status?: string } } | undefined)
 		?.playabilityStatus?.status;
@@ -296,7 +321,9 @@ export async function continueVideoPlayerYTjs(videoId: string): Promise<{
 
 	// Nothing to play means nothing to ask a token for.
 	if (video.streaming_data) {
-		poTokenCacheStore.set(await platformMinter(requestKey, videoId));
+		poTokenCacheStore.set(
+			await platformMinter(requestKey, poTokenBinding(innertube, rawPlayerResponse, videoId))
+		);
 	}
 
 	let dashUri: string | undefined;

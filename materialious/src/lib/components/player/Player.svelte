@@ -533,6 +533,9 @@
 					code: error?.code,
 					category: error?.category,
 					severity: error?.severity,
+					// Signed-in playback is set up differently, so a failure is
+					// worth knowing which kind it was.
+					signedIn: data.video.ytjs?.innertube?.session?.logged_in === true,
 					data: describeForReport(error?.data)
 				})
 			});
