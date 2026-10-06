@@ -142,7 +142,10 @@ const RETRYABLE_BEFORE_SEND = new Set([
 	'ECONNREFUSED',
 	'EAI_AGAIN',
 	'EHOSTUNREACH',
-	'ENETUNREACH'
+	'ENETUNREACH',
+	// A name that would not resolve this once - seen for video servers that
+	// resolved a moment later.
+	'ENOTFOUND'
 ]);
 
 /**
@@ -158,10 +161,29 @@ const RETRYABLE_AFTER_SEND = new Set([
 	'ETIMEDOUT'
 ]);
 
-function canRetry(code: string, method: string): boolean {
+/**
+ * A request for video that is a POST only because of how it is asked.
+ *
+ * YouTube's streaming protocol sends what it wants in a body, so every piece of
+ * a video is fetched with a POST - but it asks for media and changes nothing,
+ * and asking twice gets the same piece twice. Treating it like any other POST
+ * meant one dropped connection to a video server ended the video: the player
+ * got a 500 and stopped, with "Shaka Error 1002".
+ */
+function asksForMediaOnly(url: URL, method: string): boolean {
+	return (
+		method === 'POST' &&
+		url.hostname.endsWith('.googlevideo.com') &&
+		url.pathname === '/videoplayback'
+	);
+}
+
+function canRetry(code: string, method: string, url: URL): boolean {
 	if (RETRYABLE_BEFORE_SEND.has(code)) return true;
 
-	return (method === 'GET' || method === 'HEAD') && RETRYABLE_AFTER_SEND.has(code);
+	const changesNothing = method === 'GET' || method === 'HEAD' || asksForMediaOnly(url, method);
+
+	return changesNothing && RETRYABLE_AFTER_SEND.has(code);
 }
 
 async function proxyRequest(
@@ -292,7 +314,7 @@ async function proxyRequest(
 			const code = failureCode(err);
 			errorMsg = (err as any).toString();
 
-			if (canRetry(code, request.method) && attempt < attempts) {
+			if (canRetry(code, request.method, urlToProxyObj) && attempt < attempts) {
 				console.warn(`Proxy ${code}, asking once more: ${target}`);
 				continue;
 			}
