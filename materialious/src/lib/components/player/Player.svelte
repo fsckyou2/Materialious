@@ -536,6 +536,13 @@
 					// Signed-in playback is set up differently, so a failure is
 					// worth knowing which kind it was.
 					signedIn: data.video.ytjs?.innertube?.session?.logged_in === true,
+					// Which formats were playing, and where: a video can carry the
+					// same format several times over, told apart only by its tags.
+					active: describeForReport(
+						player?.getVariantTracks().find((track) => track.active) ?? null
+					),
+					position: playerElement?.currentTime,
+					browser: navigator.userAgent,
 					data: describeForReport(error?.data)
 				})
 			});
