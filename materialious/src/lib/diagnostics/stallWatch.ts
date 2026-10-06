@@ -57,6 +57,53 @@ async function report(context: StallContext, waitedMs: number): Promise<void> {
 }
 
 /**
+ * Turns whatever an error carries into something that survives JSON.
+ *
+ * A player error's details are nested errors, response objects and plain
+ * values, and the useful part - what YouTube actually said - is usually two
+ * levels down. Serialising them as they are gives empty objects.
+ */
+export function describeForReport(value: unknown, depth = 0): unknown {
+	if (depth > 4) return '…';
+	if (value === null || value === undefined) return value;
+	if (typeof value === 'string') return value.slice(0, 500);
+	if (typeof value !== 'object') return value;
+
+	if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) {
+		return `<${value.byteLength} bytes>`;
+	}
+
+	if (Array.isArray(value)) {
+		return value.slice(0, 10).map((item) => describeForReport(item, depth + 1));
+	}
+
+	const described: Record<string, unknown> = {};
+	const source = value as Record<string, unknown>;
+
+	// An Error keeps its message and name off the enumerable properties.
+	for (const key of ['name', 'message', 'code', 'category', 'severity', 'status']) {
+		if (key in source) described[key] = describeForReport(source[key], depth + 1);
+	}
+
+	for (const [key, item] of Object.entries(source).slice(0, 20)) {
+		if (key === 'stack' || key in described) continue;
+		described[key] = describeForReport(item, depth + 1);
+	}
+
+	return described;
+}
+
+/**
+ * Writes something that went wrong to the server log straight away, for the
+ * failures that are over in an instant rather than ones that make a page wait.
+ */
+export function reportProblem(context: StallContext): void {
+	if (!browser) return;
+
+	void report(context, 0);
+}
+
+/**
  * Starts watching, and returns the function that says the wait is over. Calling
  * it after the watch has already fired is harmless.
  */

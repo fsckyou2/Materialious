@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { watchForStall } from '$lib/diagnostics/stallWatch';
+	import { describeForReport, reportProblem, watchForStall } from '$lib/diagnostics/stallWatch';
 	import { getBestThumbnail } from '$lib/images';
 	import { videoLength } from '$lib/numbers';
 	import { generateChapterWebVTT, type ParsedDescription } from '$lib/description';
@@ -522,6 +522,20 @@
 			// looking when it happens.
 			lastPlayerError = `${error?.code}/${error?.category}`;
 			console.error('Player error:', error);
+
+			// What YouTube said when it refused a piece of video is in here, and
+			// a console nobody had open at the time is the only other place it
+			// went.
+			reportProblem({
+				phase: 'playerError',
+				id: data.video.videoId,
+				detail: () => ({
+					code: error?.code,
+					category: error?.category,
+					severity: error?.severity,
+					data: describeForReport(error?.data)
+				})
+			});
 		});
 
 		playerElement?.addEventListener('volumechange', saveVolumePreference);
