@@ -16,6 +16,7 @@ import { Browser } from '@capacitor/browser';
 import { clearFeedYTjs } from './api/youtubejs/subscriptions';
 import { ensureNoTrailingSlash, isYTBackend } from './misc';
 import { deleteKeyValue } from './api/backend/keyvalue';
+import { forgetLastFeed } from './subscriptionFeed';
 
 export function clearCaches() {
 	feedCacheStore.set({});
@@ -109,6 +110,9 @@ export async function materialiousLogout() {
 		fetch('/api/user/logout', { method: 'DELETE' });
 		rawMasterKeyStore.set(undefined);
 	}
+
+	// The feed kept to show at once on the next visit is this account's.
+	forgetLastFeed();
 
 	goto(resolve('/', {}));
 }

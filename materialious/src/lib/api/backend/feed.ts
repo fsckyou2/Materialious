@@ -5,6 +5,23 @@ import type { Feed, Video } from '../model';
 import { thumbnailsForVideoId } from '../thumbnails';
 import { getSubscriptionsBackend } from './subscriptions';
 
+export type InstanceFeedOptions = {
+	/**
+	 * Has the instance fetch again any channel older than this, for somebody
+	 * who asked for a refresh. It answers partial until it has.
+	 */
+	freshWithinSeconds?: number;
+	/**
+	 * Asks about the same channels as last time rather than reading the
+	 * subscriptions again: for going back for the rest of an answer, a few
+	 * seconds after the first, where the list has not changed.
+	 */
+	sameChannels?: boolean;
+};
+
+/** The channels the last feed was asked for. */
+let lastChannelIds: string[] | undefined;
+
 /**
  * The subscription feed, built by the instance rather than by this browser.
  *
@@ -23,12 +40,19 @@ import { getSubscriptionsBackend } from './subscriptions';
  * - no instance of our own, no account key to decrypt subscriptions with, or an
  * instance that could not answer.
  */
-export async function getFeedFromInstance(maxResults: number, page: number): Promise<Feed | null> {
+export async function getFeedFromInstance(
+	maxResults: number,
+	page: number,
+	options: InstanceFeedOptions = {}
+): Promise<Feed | null> {
 	if (!isOwnBackend()?.internalAuth) return null;
 	if (!get(rawMasterKeyStore)) return null;
 
-	const subscriptions = await getSubscriptionsBackend();
-	const channelIds = subscriptions.map((subscription) => subscription.channelId).filter(Boolean);
+	const channelIds =
+		(options.sameChannels ? lastChannelIds : undefined) ??
+		(await getSubscriptionsBackend()).map((subscription) => subscription.channelId).filter(Boolean);
+
+	lastChannelIds = channelIds;
 
 	if (channelIds.length === 0) return null;
 
@@ -41,7 +65,8 @@ export async function getFeedFromInstance(maxResults: number, page: number): Pro
 				channelIds,
 				kind: 'videos',
 				offset: Math.max(0, (page - 1) * maxResults),
-				limit: maxResults
+				limit: maxResults,
+				freshWithinSeconds: options.freshWithinSeconds
 			})
 		});
 

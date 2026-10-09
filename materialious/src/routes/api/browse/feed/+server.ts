@@ -43,17 +43,27 @@ export async function POST({ request, locals }) {
 		return json({ videos: [], hasMore: false, contract: BROWSE_CONTRACT_VERSION });
 	}
 
-	const body_ = body as { offset?: unknown; limit?: unknown; kind?: unknown };
+	const body_ = body as {
+		offset?: unknown;
+		limit?: unknown;
+		kind?: unknown;
+		freshWithinSeconds?: unknown;
+	};
 	const offset = Number(body_.offset ?? 0);
 	const limit = Number(body_.limit ?? 60);
 	const kind = body_.kind === 'shorts' || body_.kind === 'live' ? body_.kind : 'videos';
+
+	// Somebody pressing refresh: anything older than this is fetched again, and
+	// the answer says it is partial until it has been. Bounded below in getFeed.
+	const freshWithinSeconds = Number(body_.freshWithinSeconds);
 
 	try {
 		return json(
 			await getFeed(requested, {
 				kind,
 				offset: Number.isFinite(offset) ? offset : 0,
-				limit: Number.isFinite(limit) ? Math.min(limit, 120) : 60
+				limit: Number.isFinite(limit) ? Math.min(limit, 120) : 60,
+				freshWithin: Number.isFinite(freshWithinSeconds) ? freshWithinSeconds * 1000 : undefined
 			})
 		);
 	} catch (err) {

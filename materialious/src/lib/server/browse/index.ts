@@ -1,4 +1,4 @@
-import { YTNodes, type Helpers, type Innertube } from 'youtubei.js';
+import { YT, YTNodes, type Helpers, type Innertube } from 'youtubei.js';
 import type {
 	BrowseChannel,
 	BrowseCollaborator,
@@ -18,6 +18,10 @@ import type {
 export type * from './types';
 export { BROWSE_CONTRACT_VERSION } from './types';
 import { randomUUID } from 'node:crypto';
+import { readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { rename, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import { env } from '$env/dynamic/private';
 import { getBrowseSession } from './session';
 import { publishedDates } from './publishedDates';
 import { shortsThumbnailUrl, thumbnailUrlForVideoId } from '$lib/api/thumbnails';
@@ -470,13 +474,34 @@ async function resolveChannelId(innertube: Innertube, id: string): Promise<strin
 	return browseId;
 }
 
+/**
+ * What to ask the browse endpoint for to land on each of a channel's tabs.
+ *
+ * Asking for the channel and then for the tab is two requests, the first of
+ * them for a home page nobody reads and three times as slow as the tab - 630ms
+ * against 180ms, measured. Every answer carries the channel's header whichever
+ * tab it is, so nothing is lost by going straight there. Should YouTube stop
+ * honouring one of these, the library notices the tab it landed on is not the
+ * one asked for and fetches it the long way, so the cost is a request rather
+ * than a wrong answer.
+ */
+const TAB_PARAMS: Record<FeedKind, string> = {
+	videos: 'EgZ2aWRlb3PyBgQKAjoA',
+	shorts: 'EgZzaG9ydHPyBgUKA5oBAA==',
+	live: 'EgdzdHJlYW1z8gYECgJ6AA==',
+	playlists: 'EglwbGF5bGlzdHPyBgQKAkIA'
+};
+
 export async function getChannel(
 	channelId: string,
 	kind: FeedKind = 'videos'
 ): Promise<ChannelPage> {
 	const innertube = await getBrowseSession();
 	const id = await resolveChannelId(innertube, channelId);
-	const channel = await innertube.getChannel(id);
+	const channel = new YT.Channel(
+		innertube.actions,
+		await innertube.actions.execute('/browse', { browseId: id, params: TAB_PARAMS[kind] })
+	);
 
 	let videos: BrowseVideo[] = [];
 	let playlists: BrowsePlaylist[] = [];
@@ -720,81 +745,118 @@ async function rawRequest(endpoint: string, body: Record<string, unknown>): Prom
 }
 
 /**
- * The title of the shelf a channel's collaborations are on, in the language
- * this instance's session asks in. The shelf carries no link or id to know it
- * by, only this.
+ * The titles of the shelves read off a channel's television page, in the
+ * language this instance's session asks in. A shelf carries no link or id to
+ * know it by, only this.
  */
+const VIDEOS_SHELF = 'Videos';
 const COLLABORATIONS_SHELF = 'Collaborations';
 
+/** One video tile off the television layout, credited to the channel it is on. */
+function fromTile(tile: RawTile | undefined, channelId: string): BrowseVideo | null {
+	if (tile?.contentType !== 'TILE_CONTENT_TYPE_VIDEO') return null;
+
+	const videoId = tile.contentId ?? tile.onSelectCommand?.watchEndpoint?.videoId;
+	if (!videoId) return null;
+
+	const lines = (tile.metadata?.tileMetadataRenderer?.lines ?? []).map((line) =>
+		(line.lineRenderer?.items ?? []).map((item) => rawText(item.lineItemRenderer?.text))
+	);
+
+	// The first line names everybody - "Nicole & Ben's Worx Maker Vlogs and
+	// Ben's Worx" - and the second is the views and the age, in words.
+	const byline = (lines[0] ?? []).join('');
+	const stats = lines[1] ?? [];
+	const age = stats.find((text) => secondsSincePublished(text) !== null) ?? '';
+	const views = stats.find((text) => /views?$/i.test(text)) ?? '';
+
+	const header = tile.header?.tileHeaderRenderer;
+	const time = header?.thumbnailOverlays?.find(
+		(overlay) => overlay.thumbnailOverlayTimeStatusRenderer
+	)?.thumbnailOverlayTimeStatusRenderer;
+	const live = time?.style === 'LIVE';
+
+	return {
+		videoId,
+		title: rawText(tile.metadata?.tileMetadataRenderer?.title),
+		author: byline,
+		authorId: channelId,
+		lengthSeconds: live ? 0 : secondsFromLabel(rawText(time?.text)),
+		publishedText: age,
+		publishedSecondsAgo: secondsSincePublished(age),
+		publishedAt: null,
+		// Written "10K views" here, where every other listing says "10K".
+		viewCountText: views.replace(/\s*views?$/i, ''),
+		thumbnail: bestThumbnail(header?.thumbnail?.thumbnails) || thumbnailUrlForVideoId(videoId),
+		liveNow: live,
+		type: live ? 'stream' : 'video',
+		collaboration: false
+	};
+}
+
+/** Said when a channel's television page has no shelf of its videos to read. */
+class NoVideosShelf extends Error {}
+
 /**
- * The videos a channel made with other channels, newest first - including the
- * ones somebody else uploaded.
+ * A channel's newest videos and its collaborations, from one request.
  *
  * A collaboration is listed only under the channel that uploaded it, so a feed
  * gathered from channels' own videos never sees one that a subscribed channel
  * merely took part in. YouTube's own subscription feed does, from data nobody
  * outside an account can ask for. The one place that says so publicly is a
  * shelf on the television layout of the channel's page, holding the most
- * recent ten.
+ * recent ten - and the same page has a shelf of the channel's own newest two
+ * dozen, in the same order as its videos tab, members-only videos left out.
  *
- * Each is credited to the channel it was found under, since that is the one
- * somebody is subscribed to; who else made it is a separate question, answered
- * by `getCollaborators` when somebody asks.
+ * So one request does what used to take three: the channel's home page, its
+ * videos tab, and this page for the collaborations alone. Fetched separately,
+ * the collaborations were also the slowest part, and arrived on screen a
+ * minute after everything else.
+ *
+ * Each collaboration is credited to the channel it was found under, since that
+ * is the one somebody is subscribed to; who else made it is a separate
+ * question, answered by `getCollaborators` when somebody asks.
  */
-export async function getCollaborations(channelId: string): Promise<BrowseVideo[]> {
+async function getChannelFromTelevision(
+	channelId: string
+): Promise<{ videos: BrowseVideo[]; collaborations: BrowseVideo[] }> {
 	const page = await rawRequest('/browse', { browseId: channelId, client: 'TV' });
 
-	const shelf = findAll<RawShelf>(page, 'shelfRenderer').find(
-		(candidate) =>
-			rawText(
-				candidate.headerRenderer?.shelfHeaderRenderer?.avatarLockup?.avatarLockupRenderer?.title
-			) === COLLABORATIONS_SHELF
-	);
-
-	const videos: BrowseVideo[] = [];
-
-	for (const { tileRenderer: tile } of shelf?.content?.horizontalListRenderer?.items ?? []) {
-		if (tile?.contentType !== 'TILE_CONTENT_TYPE_VIDEO') continue;
-
-		const videoId = tile.contentId ?? tile.onSelectCommand?.watchEndpoint?.videoId;
-		if (!videoId) continue;
-
-		const lines = (tile.metadata?.tileMetadataRenderer?.lines ?? []).map((line) =>
-			(line.lineRenderer?.items ?? []).map((item) => rawText(item.lineItemRenderer?.text))
+	const shelves = findAll<RawShelf>(page, 'shelfRenderer');
+	const shelf = (title: string) =>
+		shelves.find(
+			(candidate) =>
+				rawText(
+					candidate.headerRenderer?.shelfHeaderRenderer?.avatarLockup?.avatarLockupRenderer?.title
+				) === title
 		);
 
-		// The first line names everybody - "Nicole & Ben's Worx Maker Vlogs and
-		// Ben's Worx" - and the second is the views and the age, in words.
-		const byline = (lines[0] ?? []).join('');
-		const stats = lines[1] ?? [];
-		const age = stats.find((text) => secondsSincePublished(text) !== null) ?? '';
-		const views = stats.find((text) => /views?$/i.test(text)) ?? '';
+	const tiles = (found: RawShelf | undefined) =>
+		(found?.content?.horizontalListRenderer?.items ?? []).map((item) => item.tileRenderer);
 
-		const header = tile.header?.tileHeaderRenderer;
-		const time = header?.thumbnailOverlays?.find(
-			(overlay) => overlay.thumbnailOverlayTimeStatusRenderer
-		)?.thumbnailOverlayTimeStatusRenderer;
-		const live = time?.style === 'LIVE';
+	const own = shelf(VIDEOS_SHELF);
+	if (!own) throw new NoVideosShelf(`No ${VIDEOS_SHELF} shelf on ${channelId}'s page`);
 
-		videos.push({
-			videoId,
-			title: rawText(tile.metadata?.tileMetadataRenderer?.title),
-			author: byline,
-			authorId: channelId,
-			lengthSeconds: live ? 0 : secondsFromLabel(rawText(time?.text)),
-			publishedText: age,
-			publishedSecondsAgo: secondsSincePublished(age),
-			publishedAt: null,
-			// Written "10K views" here, where every other listing says "10K".
-			viewCountText: views.replace(/\s*views?$/i, ''),
-			thumbnail: bestThumbnail(header?.thumbnail?.thumbnails) || thumbnailUrlForVideoId(videoId),
-			liveNow: live,
-			type: live ? 'stream' : 'video',
-			collaboration: true
-		});
-	}
+	const name = rawText(
+		findAll<{ title?: RawText }>(page, 'channelHeaderRenderer')[0]?.title
+	).trim();
 
-	return videos;
+	const videos = tiles(own)
+		.map((tile) => fromTile(tile, channelId))
+		.filter((video): video is BrowseVideo => video !== null)
+		.map((video) => ({
+			...video,
+			author: video.author || name,
+			// A channel's own upload made with somebody else names them both.
+			collaboration: name !== '' && video.author !== name && video.author.startsWith(name)
+		}));
+
+	const collaborations = tiles(shelf(COLLABORATIONS_SHELF))
+		.map((tile) => fromTile(tile, channelId))
+		.filter((video): video is BrowseVideo => video !== null)
+		.map((video) => ({ ...video, collaboration: true }));
+
+	return { videos, collaborations };
 }
 
 /** Text YouTube wraps in direction marks, which only get in the way here. */
@@ -872,18 +934,40 @@ export async function getCollaborators(videoId: string): Promise<BrowseCollabora
 const FEED_CACHE_MS = 30 * 60 * 1000;
 
 /**
- * The same for a channel's collaborations, which are the extra: a request
- * each as well, and much the rarer, so they are asked about less often.
+ * How old a channel may get before it is fetched again with nobody waiting.
+ *
+ * Fetching only when somebody asked meant that whoever opened the feed after
+ * half an hour away was shown the old one and then watched it fill in over the
+ * next twenty seconds, a few channels at a time. Kept fresh behind the scenes
+ * instead, a feed is whole and current the moment it is asked for. Well inside
+ * FEED_CACHE_MS, so that nothing anybody asks for has gone stale.
  */
-const COLLABORATIONS_CACHE_MS = 2 * 60 * 60 * 1000;
+const KEEP_FRESH_AFTER_MS = 10 * 60 * 1000;
 
 /**
- * How long a channel whose collaborations could not be read is left before
- * asking again. Far longer than a channel's own videos get: when the pages
- * these come from fail, they fail for many channels at once, and asking every
- * couple of minutes for each is what keeps them failing.
+ * How often the stalest channel is fetched, one at a time.
+ *
+ * Slow on purpose. Two hundred channels every ten minutes is one request every
+ * three seconds - nothing like the bursts YouTube has refused - and a channel
+ * that falls behind is still fetched the moment somebody asks.
  */
-const FAILED_COLLABORATIONS_RETRY_MS = 30 * 60 * 1000;
+const KEEP_FRESH_EVERY_MS = 3_000;
+
+/**
+ * How long after somebody last asked for a channel it is still kept fresh.
+ *
+ * Long enough to cover a weekend away from the television; anybody back after
+ * longer than that waits for a fetch, as everybody used to.
+ */
+const KEEP_FRESH_FOR_MS = 3 * 24 * 60 * 60 * 1000;
+
+/**
+ * The newest copy somebody asking for a refresh may insist on.
+ *
+ * A refresh fetches every channel in the feed again, so this is what keeps a
+ * button pressed over and over from becoming the burst YouTube refuses.
+ */
+export const MIN_FRESH_WITHIN_MS = 60_000;
 
 /**
  * How many channels are fetched at once.
@@ -921,22 +1005,18 @@ const FAILED_CHANNEL_RETRY_MS = 2 * 60 * 1000;
 const CHANNEL_RETRY_MS = 400;
 
 /**
- * How many requests for channels, and for their collaborations, may be with
- * YouTube at once, across everybody's feeds.
+ * How many requests for channels may be with YouTube at once, across
+ * everybody's feeds.
  *
  * Each feed's own fetching was already bounded, but a channel refreshed behind
  * an answer, or still loading after its feed gave up waiting, was not - and a
  * feed opened after half an hour away refreshes every channel at once. With a
- * collaborations shelf beside each, a hundred and sixty channels became three
- * hundred and twenty requests inside a second, and YouTube answered a hundred
- * and eleven of them with "too many requests". Those channels were then
- * missing from the feed until they were tried again.
- *
- * Collaborations get the smaller share, so they never hold a channel's own
- * videos up: they are the extra, and arriving a little later costs nothing.
+ * separate request for each channel's collaborations, a hundred and sixty
+ * channels once became three hundred and twenty requests inside a second, and
+ * YouTube answered a hundred and eleven of them with "too many requests".
+ * Collaborations now come in the same request as the channel's own videos.
  */
 const CHANNEL_REQUESTS_AT_ONCE = 6;
-const COLLABORATION_REQUESTS_AT_ONCE = 2;
 
 /**
  * How long requests wait once YouTube has said to slow down, and what counts
@@ -953,11 +1033,6 @@ const FAILURE_WINDOW_MS = 10_000;
  * Runs work no more than so many at a time, the rest waiting in turn, and not
  * at all while cooling off.
  *
- * Each kind of request cools off on its own. YouTube refuses them separately -
- * the television pages collaborations come from have failed in runs while
- * channels' own videos answered every time - and pausing everything for the
- * sake of the extra held up the feed itself for over a minute.
- *
  * A finished piece hands its place straight to the next in line rather than
  * giving it up, so nothing that arrives in between can take it and run one
  * over the limit.
@@ -970,8 +1045,9 @@ function limitedTo(atOnce: number, kind: string) {
 	const recentFailures: number[] = [];
 
 	function noteFailedRequest(error: unknown): void {
-		// A channel that is gone fails every time, and says nothing about load.
-		if (isGone(error)) return;
+		// A channel that is gone fails every time, and says nothing about load;
+		// nor does one whose page simply has no shelf of videos to read.
+		if (isGone(error) || error instanceof NoVideosShelf) return;
 
 		const now = Date.now();
 
@@ -1015,7 +1091,6 @@ function limitedTo(atOnce: number, kind: string) {
 }
 
 const channelRequest = limitedTo(CHANNEL_REQUESTS_AT_ONCE, 'channels');
-const collaborationRequest = limitedTo(COLLABORATION_REQUESTS_AT_ONCE, 'collaborations');
 
 /** One channel that could not be fetched, and what it said. */
 export type ChannelFailure = {
@@ -1070,25 +1145,87 @@ function isGone(error: unknown): boolean {
 	);
 }
 
-async function fetchWithOneRetry(channelId: string, kind: FeedKind) {
+function pause(ms: number): Promise<void> {
+	return new Promise((resolve) => {
+		setTimeout(resolve, ms).unref?.();
+	});
+}
+
+/**
+ * Stands in for a page token where the rest of a channel is best had from its
+ * tab: a list read off the television page, or one brought back from disk,
+ * whose tokens did not survive the restart. Going deeper reads the tab from the
+ * top and carries on from there.
+ */
+const FROM_THE_TAB = 'from-the-tab';
+
+type Fetched = { videos: BrowseVideo[]; collaborations?: BrowseVideo[]; next: string | null };
+
+/**
+ * A channel's newest, from YouTube.
+ *
+ * The videos tab comes off the television page, collaborations and all. The
+ * channel's own tab is the fallback, for a page without a shelf of videos or
+ * one that would not load - keeping whatever collaborations were known before,
+ * since the tab has none to offer.
+ */
+async function fetchNewest(
+	channelId: string,
+	kind: FeedKind,
+	remembered: ChannelFeed | undefined
+): Promise<Fetched> {
+	const fromTheTab = async (): Promise<Fetched> => {
+		const channel = await channelRequest(() => getChannel(channelId, kind));
+
+		return {
+			videos: channel.videos.map((video) => ({
+				...video,
+				author: video.author || channel.name,
+				authorId: video.authorId || channelId
+			})),
+			next: channel.continuation
+		};
+	};
+
+	if (kind === 'videos') {
+		try {
+			return {
+				...(await channelRequest(() => getChannelFromTelevision(channelId))),
+				next: FROM_THE_TAB
+			};
+		} catch (error) {
+			if (isGone(error)) throw error;
+
+			return { ...(await fromTheTab()), collaborations: remembered?.collaborations };
+		}
+	}
+
 	try {
-		return await channelRequest(() => getChannel(channelId, kind));
+		return await fromTheTab();
 	} catch (error) {
 		if (isGone(error)) throw error;
 
-		await new Promise((resolve) => {
-			setTimeout(resolve, CHANNEL_RETRY_MS).unref?.();
-		});
+		await pause(CHANNEL_RETRY_MS);
 
-		return channelRequest(() => getChannel(channelId, kind));
+		return fromTheTab();
 	}
 }
 
 type ChannelFeed = {
 	videos: BrowseVideo[];
+	/**
+	 * The videos this channel made with others, uploaded by whoever uploaded
+	 * them. Only the videos tab has any.
+	 */
+	collaborations?: BrowseVideo[];
 	/** Token for this channel's next page, or null once it is exhausted. */
 	next: string | null;
 	at: number;
+	/**
+	 * When fetching it last failed, so that a channel that keeps failing is
+	 * asked about every couple of minutes rather than on every look.
+	 */
+	failedAt?: number;
 	/**
 	 * Set when this is the empty answer left behind by a failed fetch.
 	 *
@@ -1096,6 +1233,8 @@ type ChannelFeed = {
 	 * both an empty list, and only one of them is worth telling anybody about.
 	 */
 	failed?: true;
+	/** Set when YouTube said the channel is gone, so it is not kept fresh. */
+	gone?: true;
 };
 
 const feedCache = new Map<string, ChannelFeed>();
@@ -1105,6 +1244,12 @@ const inFlight = new Map<string, Promise<ChannelFeed>>();
 
 /** Channels currently being deepened, so a token is spent once. */
 const deepening = new Map<string, Promise<boolean>>();
+
+/**
+ * When somebody last asked for each channel, so the ones nobody wants any more
+ * stop being kept fresh. Least recently asked first.
+ */
+const wanted = new Map<string, number>();
 
 /** How many videos of one channel are kept, however far anybody scrolls. */
 const MAX_CHANNEL_DEPTH = 400;
@@ -1116,6 +1261,25 @@ const MAX_FEED_LIMIT = 120;
 /** How many channels are remembered at once, least recently used evicted. */
 const MAX_CACHED_CHANNELS = 600;
 
+/** Whether a channel's copy is older than wanted and may be fetched again now. */
+function isDue(channel: ChannelFeed, maxAge: number, now = Date.now()): boolean {
+	return now - channel.at >= maxAge && now - (channel.failedAt ?? 0) >= FAILED_CHANNEL_RETRY_MS;
+}
+
+function keep(key: string, channel: ChannelFeed): void {
+	// Keys are channels somebody asked about, so how many there are is their
+	// decision unless it is made here. The least recently wanted goes; it costs
+	// one request to want it again.
+	while (feedCache.size >= MAX_CACHED_CHANNELS && !feedCache.has(key)) {
+		const coldest = feedCache.keys().next().value;
+		if (coldest === undefined) break;
+		feedCache.delete(coldest);
+	}
+
+	feedCache.set(key, channel);
+	unsaved = true;
+}
+
 async function fetchChannel(channelId: string, kind: FeedKind): Promise<ChannelFeed> {
 	const key = `${kind}:${channelId}`;
 
@@ -1123,55 +1287,49 @@ async function fetchChannel(channelId: string, kind: FeedKind): Promise<ChannelF
 	if (existing) return existing;
 
 	const request = (async () => {
+		const remembered = feedCache.get(key);
+
 		try {
 			// Both at once: the dates are worth having but not worth waiting for
 			// in series behind the page they describe.
-			const [channel, dates] = await Promise.all([
-				fetchWithOneRetry(channelId, kind),
+			const [fetched, dates] = await Promise.all([
+				fetchNewest(channelId, kind, remembered),
 				publishedDates(channelId)
 			]);
 
-			const loaded: ChannelFeed = {
-				videos: channel.videos.map((video) => {
-					const at = dates.get(video.videoId);
+			const dated = (video: BrowseVideo): BrowseVideo => {
+				const at = dates.get(video.videoId);
+				if (at === undefined) return video;
 
-					return {
-						...video,
-						author: video.author || channel.name,
-						authorId: video.authorId || channelId,
-						publishedAt: at ?? null,
-						publishedSecondsAgo:
-							at === undefined
-								? video.publishedSecondsAgo
-								: Math.max(0, Math.round((Date.now() - at) / 1000))
-					};
-				}),
-				next: channel.continuation,
+				return {
+					...video,
+					publishedAt: at,
+					publishedSecondsAgo: Math.max(0, Math.round((Date.now() - at) / 1000))
+				};
+			};
+
+			const loaded: ChannelFeed = {
+				videos: fetched.videos.map(dated),
+				collaborations: fetched.collaborations?.map(dated),
+				next: fetched.next,
 				at: Date.now()
 			};
 
-			// Keys are channels somebody asked about, so how many there are is
-			// their decision unless it is made here. The least recently wanted
-			// goes; it costs one scrape to want it again.
-			while (feedCache.size >= MAX_CACHED_CHANNELS) {
-				const coldest = feedCache.keys().next().value;
-				if (coldest === undefined || coldest === key) break;
-				feedCache.delete(coldest);
-			}
-
-			feedCache.set(key, loaded);
+			keep(key, loaded);
 
 			return loaded;
 		} catch (error) {
 			// One unreachable channel should not empty the whole feed - nor
 			// should it be asked again from scratch by every request after
-			// this one. A channel that fails is remembered as empty, but
-			// backdated so it falls stale in a couple of minutes and is tried
-			// again behind somebody rather than in front of them. Without this
-			// a handful of dead channels out of a hundred and sixty means every
+			// this one. A channel that fails keeps what it had, or is
+			// remembered as empty, and is tried again in a couple of minutes
+			// behind somebody rather than in front of them. Without this a
+			// handful of dead channels out of a hundred and sixty means every
 			// feed waits the full budget, for ever.
-			const remembered = feedCache.get(key);
-			if (remembered) return remembered;
+			if (remembered) {
+				remembered.failedAt = Date.now();
+				return remembered;
+			}
 
 			// A channel YouTube says is gone is not coming back, so it is
 			// remembered for as long as anything else; one that merely failed
@@ -1202,10 +1360,11 @@ async function fetchChannel(channelId: string, kind: FeedKind): Promise<ChannelF
 				videos: [],
 				next: null,
 				at: permanent ? Date.now() : Date.now() - FEED_CACHE_MS + FAILED_CHANNEL_RETRY_MS,
-				failed: true
+				failed: true,
+				...(permanent ? { gone: true as const } : { failedAt: Date.now() })
 			};
 
-			feedCache.set(key, failed);
+			keep(key, failed);
 
 			return failed;
 		} finally {
@@ -1239,9 +1398,21 @@ function withDeadline(work: Promise<ChannelFeed>, fallback: ChannelFeed): Promis
  * A stale copy is served immediately and refreshed behind it: with a hundred
  * and sixty subscriptions, waiting for every channel to answer would be a
  * minute of blank screen for the sake of the handful that changed.
+ *
+ * @param freshWithin how old a copy may be before it is fetched again - less
+ * than usual when somebody has asked for a refresh.
  */
-async function loadChannel(channelId: string, kind: FeedKind): Promise<ChannelFeed> {
-	const cached = feedCache.get(`${kind}:${channelId}`);
+async function loadChannel(
+	channelId: string,
+	kind: FeedKind,
+	freshWithin: number
+): Promise<ChannelFeed> {
+	const key = `${kind}:${channelId}`;
+
+	wanted.delete(key);
+	wanted.set(key, Date.now());
+
+	const cached = feedCache.get(key);
 
 	if (!cached) {
 		return withDeadline(fetchChannel(channelId, kind), {
@@ -1251,94 +1422,176 @@ async function loadChannel(channelId: string, kind: FeedKind): Promise<ChannelFe
 		});
 	}
 
-	if (Date.now() - cached.at >= FEED_CACHE_MS) {
+	if (isDue(cached, freshWithin)) {
 		void fetchChannel(channelId, kind);
 	}
 
 	// Moved to the end, so the channel nobody has asked about in longest is the
 	// one dropped when the cache is full.
-	const key = `${kind}:${channelId}`;
 	feedCache.delete(key);
 	feedCache.set(key, cached);
 
 	return cached;
 }
 
-type Collaborations = { videos: BrowseVideo[]; at: number };
+/** Whether a channel is being fetched for the background right now. */
+let keepingFresh = false;
 
-const collaborationCache = new Map<string, Collaborations>();
+/**
+ * Fetches the stalest channel anybody still wants, if one is due.
+ *
+ * One at a time, and only the one: see KEEP_FRESH_EVERY_MS.
+ */
+function keepOneFresh(): void {
+	if (keepingFresh) return;
 
-/** Channels whose collaborations are being fetched right now. */
-const collaborationsInFlight = new Map<string, Promise<Collaborations>>();
+	const now = Date.now();
 
-async function fetchCollaborations(channelId: string): Promise<Collaborations> {
-	const existing = collaborationsInFlight.get(channelId);
-	if (existing) return existing;
+	// Channels nobody has asked about in days are let go of.
+	for (const [key, askedAt] of wanted) {
+		if (now - askedAt <= KEEP_FRESH_FOR_MS) break;
+		wanted.delete(key);
+	}
 
-	const request = (async () => {
-		let loaded: Collaborations;
+	let stalest: string | undefined;
+	let stalestAt = Number.POSITIVE_INFINITY;
 
-		try {
-			loaded = {
-				videos: await collaborationRequest(() => getCollaborations(channelId)),
-				at: Date.now()
-			};
-		} catch (error) {
-			// Collaborations are extra: a channel whose shelf cannot be read
-			// still has its own videos in the feed. It is tried again after
-			// FAILED_COLLABORATIONS_RETRY_MS, keeping whatever it had before.
-			console.warn(
-				`browse: collaborations for ${channelId} failed:`,
-				error instanceof Error ? error.message : String(error)
-			);
+	for (const [key, channel] of feedCache) {
+		if (channel.gone || inFlight.has(key) || !wanted.has(key)) continue;
+		if (!isDue(channel, KEEP_FRESH_AFTER_MS, now)) continue;
 
-			loaded = {
-				videos: collaborationCache.get(channelId)?.videos ?? [],
-				at: Date.now() - COLLABORATIONS_CACHE_MS + FAILED_COLLABORATIONS_RETRY_MS
-			};
+		if (channel.at < stalestAt) {
+			stalest = key;
+			stalestAt = channel.at;
 		}
+	}
 
-		while (collaborationCache.size >= MAX_CACHED_CHANNELS) {
-			const coldest = collaborationCache.keys().next().value;
-			if (coldest === undefined || coldest === channelId) break;
-			collaborationCache.delete(coldest);
-		}
+	if (!stalest) return;
 
-		collaborationCache.set(channelId, loaded);
+	const split = stalest.indexOf(':');
 
-		return loaded;
-	})().finally(() => collaborationsInFlight.delete(channelId));
+	keepingFresh = true;
+	void fetchChannel(stalest.slice(split + 1), stalest.slice(0, split) as FeedKind).finally(() => {
+		keepingFresh = false;
+	});
+}
 
-	collaborationsInFlight.set(channelId, request);
+/** Whether anything has changed since the cache was last written to disk. */
+let unsaved = false;
 
-	return request;
+/** How often the cache is written to disk, when it has changed. */
+const SAVE_EVERY_MS = 5 * 60 * 1000;
+
+/**
+ * Where the cache is kept between restarts: beside the database, which is the
+ * one place an instance is certain to have kept. None for a database that is
+ * not a file, which means nowhere worth writing to.
+ */
+function cacheFile(): string | null {
+	if (env.FEED_CACHE_FILE) return env.FEED_CACHE_FILE;
+
+	const database = env.DATABASE_CONNECTION_URI?.match(/^sqlite:\/\/(\/.+)$/)?.[1];
+
+	return database ? join(dirname(database), 'feed-cache.json') : null;
+}
+
+/** The cache as written to disk. Page tokens live in memory, so not those. */
+type SavedFeeds = {
+	version: 1;
+	channels: [string, Omit<ChannelFeed, 'next'> & { more: boolean }][];
+	wanted: [string, number][];
+};
+
+function savedFeeds(): string {
+	const saved: SavedFeeds = {
+		version: 1,
+		channels: [...feedCache]
+			.filter(([key]) => wanted.has(key))
+			.map(([key, channel]) => {
+				const { next, ...rest } = channel;
+				return [key, { ...rest, more: next !== null }];
+			}),
+		wanted: [...wanted]
+	};
+
+	return JSON.stringify(saved);
 }
 
 /**
- * A channel's collaborations, from memory where possible, on the same terms as
- * its own videos: stale is served and refreshed behind, and nothing cached is
- * waited for only so long.
+ * Writes the cache to disk, so that a restart - which is every deploy - starts
+ * with a feed rather than with a minute of fetching every channel at once.
  */
-async function loadCollaborations(channelId: string): Promise<BrowseVideo[]> {
-	const cached = collaborationCache.get(channelId);
+async function saveFeeds(): Promise<void> {
+	const file = cacheFile();
+	if (!file || !unsaved) return;
 
-	if (!cached) {
-		const fetched = await withDeadline(
-			fetchCollaborations(channelId).then((loaded) => ({ ...loaded, next: null })),
-			{ videos: [], next: null, at: 0 }
-		);
+	unsaved = false;
 
-		return fetched.videos;
+	try {
+		await writeFile(`${file}.tmp`, savedFeeds());
+		await rename(`${file}.tmp`, file);
+	} catch (error) {
+		unsaved = true;
+		console.warn('browse: could not save the feed cache:', error);
+	}
+}
+
+/** The same, at once, for an instance that is about to stop. */
+function saveFeedsNow(): void {
+	const file = cacheFile();
+	if (!file || !unsaved) return;
+
+	try {
+		writeFileSync(`${file}.tmp`, savedFeeds());
+		renameSync(`${file}.tmp`, file);
+		unsaved = false;
+	} catch (error) {
+		console.warn('browse: could not save the feed cache:', error);
+	}
+}
+
+function loadSavedFeeds(): void {
+	const file = cacheFile();
+	if (!file) return;
+
+	let saved: SavedFeeds;
+	try {
+		saved = JSON.parse(readFileSync(file, 'utf8'));
+	} catch {
+		// Nothing saved yet, or nothing readable: either way, start empty.
+		return;
 	}
 
-	if (Date.now() - cached.at >= COLLABORATIONS_CACHE_MS) {
-		void fetchCollaborations(channelId);
+	if (saved?.version !== 1) return;
+
+	for (const [key, askedAt] of saved.wanted ?? []) wanted.set(key, askedAt);
+
+	for (const [key, channel] of (saved.channels ?? []).slice(-MAX_CACHED_CHANNELS)) {
+		const { more, ...rest } = channel;
+		if (!feedCache.has(key)) feedCache.set(key, { ...rest, next: more ? FROM_THE_TAB : null });
 	}
 
-	collaborationCache.delete(channelId);
-	collaborationCache.set(channelId, cached);
+	console.log(`browse: brought back ${feedCache.size} channels from ${file}`);
+}
 
-	return cached.videos;
+let keepingFeeds = false;
+
+/**
+ * Brings back the cache this instance had before it last stopped, and keeps it
+ * fresh and saved from now on. Called as the server starts; safe to call again.
+ */
+export function keepFeeds(): void {
+	if (keepingFeeds) return;
+	keepingFeeds = true;
+
+	loadSavedFeeds();
+
+	setInterval(keepOneFresh, KEEP_FRESH_EVERY_MS).unref?.();
+	setInterval(() => void saveFeeds(), SAVE_EVERY_MS).unref?.();
+
+	// adapter-node says so before it stops, on the signal a container is
+	// stopped with.
+	process.once('sveltekit:shutdown', saveFeedsNow);
 }
 
 /**
@@ -1356,18 +1609,39 @@ async function deepenChannel(key: string, channel: ChannelFeed): Promise<boolean
 	const already = deepening.get(key);
 	if (already) return already;
 
+	const split = key.indexOf(':');
+	const channelId = key.slice(split + 1);
+
 	const request = (async () => {
-		const page = await continuePage(token);
+		let page: { videos: BrowseVideo[]; continuation: string | null };
+
+		if (token === FROM_THE_TAB) {
+			page = await channelRequest(() => getChannel(channelId, key.slice(0, split) as FeedKind));
+		} else {
+			page = await continuePage(token);
+		}
 
 		// Nothing came back and no new token: the page is gone rather than
 		// empty, so leave the channel as it was and let its next refresh
 		// reissue one.
 		if (!page.videos.length && !page.continuation) return false;
 
-		channel.videos = [...channel.videos, ...page.videos].slice(0, MAX_CHANNEL_DEPTH);
+		// The tab read from the top repeats what the channel already has.
+		const known = new Set(channel.videos.map((video) => video.videoId));
+		// And a channel's own pages do not say whose they are.
+		const name = channel.videos.find((video) => !video.collaboration)?.author ?? '';
+		const added = page.videos
+			.filter((video) => !known.has(video.videoId))
+			.map((video) => ({
+				...video,
+				author: video.author || name,
+				authorId: video.authorId || channelId
+			}));
+
+		channel.videos = [...channel.videos, ...added].slice(0, MAX_CHANNEL_DEPTH);
 		channel.next = page.continuation;
 
-		return page.videos.length > 0;
+		return added.length > 0 || page.continuation !== null;
 	})().finally(() => deepening.delete(key));
 
 	deepening.set(key, request);
@@ -1488,8 +1762,10 @@ function mergeChannels(channels: { videos: BrowseVideo[] }[]): BrowseVideo[] {
  */
 export async function getFeed(
 	channelIds: string[],
-	options: { kind?: FeedKind; offset?: number; limit?: number } = {}
+	options: { kind?: FeedKind; offset?: number; limit?: number; freshWithin?: number } = {}
 ): Promise<FeedPage> {
+	keepFeeds();
+
 	// An offset is how far somebody has scrolled, and nobody scrolls past what
 	// is kept. Left unbounded it is instead an instruction to go as deep as
 	// possible in every channel at once - hundreds of fetches for one request,
@@ -1497,58 +1773,40 @@ export async function getFeed(
 	const offset = Math.min(Math.max(0, options.offset ?? 0), MAX_FEED_OFFSET);
 	const limit = Math.min(Math.max(1, options.limit ?? 60), MAX_FEED_LIMIT);
 	const kind = options.kind ?? 'videos';
+	const freshWithin = Math.min(
+		Math.max(MIN_FRESH_WITHIN_MS, options.freshWithin ?? FEED_CACHE_MS),
+		FEED_CACHE_MS
+	);
 
 	const queue = [...channelIds];
 	const loaded: { key: string; channel: ChannelFeed }[] = [];
-
-	// Only the videos tab has collaborations to add: they are not shorts, and
-	// a live collaboration is in the live tab of whoever is streaming it.
-	const collaborated: { videos: BrowseVideo[] }[] = [];
-	const collaborating: Promise<void>[] = [];
-
-	const firstPaint = Date.now() + FEED_FIRST_PAINT_MS;
 
 	const workers = Array.from({ length: Math.min(FEED_CONCURRENCY, queue.length) }, async () => {
 		for (;;) {
 			const channelId = queue.shift();
 			if (!channelId) return;
 
-			// Alongside the channel rather than behind it, so a slow shelf does
-			// not hold up the channels still queued.
-			if (kind === 'videos') {
-				collaborating.push(
-					loadCollaborations(channelId).then((videos) => {
-						collaborated.push({ videos });
-					})
-				);
-			}
-
 			loaded.push({
 				key: `${kind}:${channelId}`,
-				channel: await loadChannel(channelId, kind)
+				channel: await loadChannel(channelId, kind, freshWithin)
 			});
 		}
 	});
 
-	// Cached channels answer at once and the rest are a scrape each, so a feed
-	// with nothing behind it is a hundred and sixty scrapes deep - eight seconds
-	// measured, whether they run eight at a time or twenty-four. Rather than
-	// hold the screen blank for all of them, the answer goes out with whatever
-	// has arrived; the rest carry on filling the cache and are in the next one,
-	// which is a second away rather than eight.
-	const untilFirstPaint = () =>
+	// Cached channels answer at once and the rest are a request each, so a feed
+	// with nothing behind it is a hundred and sixty requests deep - eight
+	// seconds measured, whether they run eight at a time or twenty-four. Rather
+	// than hold the screen blank for all of them, the answer goes out with
+	// whatever has arrived; the rest carry on filling the cache and are in the
+	// next one, which is a second away rather than eight.
+	await Promise.race([
+		Promise.all(workers),
 		new Promise((resolve) => {
-			setTimeout(resolve, Math.max(0, firstPaint - Date.now())).unref?.();
-		});
-
-	await Promise.race([Promise.all(workers), untilFirstPaint()]);
-
-	// Whatever collaborations are ready in the time left. Cached ones are
-	// ready at once; the rest are in the next answer, like a slow channel.
-	await Promise.race([Promise.all(collaborating), untilFirstPaint()]);
+			setTimeout(resolve, FEED_FIRST_PAINT_MS).unref?.();
+		})
+	]);
 
 	const answered = [...loaded];
-	const collaborations = [...collaborated];
 	const partial = answered.length < channelIds.length;
 
 	// Channels that could not be read at all - not channels that simply have
@@ -1558,8 +1816,14 @@ export async function getFeed(
 		.filter((entry) => entry.channel.failed === true)
 		.map((entry) => entry.key.slice(entry.key.indexOf(':') + 1));
 
+	// The channels' own lists go before their collaborations, so that where a
+	// video is in both - one subscribed channel uploaded it, another took part
+	// - the uploader's copy is the one kept.
 	const merged = () =>
-		mergeChannels([...answered.map((entry) => entry.channel), ...collaborations]);
+		mergeChannels([
+			...answered.map((entry) => entry.channel),
+			...answered.map((entry) => ({ videos: entry.channel.collaborations ?? [] }))
+		]);
 
 	let videos = merged();
 
@@ -1576,22 +1840,16 @@ export async function getFeed(
 	}
 
 	// Ages are worked out when a channel is fetched and a channel is held for
-	// half an hour, so by the time one is handed out it can be half an hour
-	// behind. Where the exact time is known the age is taken again here, so
-	// what a device is told is as of now.
+	// a while, so by the time one is handed out it can be minutes behind. Where
+	// the exact time is known the age is taken again here, so what a device is
+	// told is as of now.
 	const asOf = Date.now();
 
-	// A channel held for longer than its half hour is handed out as it was and
-	// fetched again behind the answer, which used to say nothing about it. So
-	// somebody opening the page after an evening away was shown the evening's
-	// feed, with nothing to tell their screen that a newer one was seconds
-	// away, and had to reload - sometimes twice, for the channels still being
-	// fetched the first time. Anything of theirs still in flight now counts
-	// the same as a channel that had not answered at all.
-	//
-	// Collaborations being fetched do not: they come a few at a time, and a
-	// feed that called itself incomplete for as long as they took would have
-	// screens asking again for a minute over what is only ever the extra.
+	// A channel served from a copy that is being fetched again counts the same
+	// as one that had not answered at all: the screen is told a newer answer is
+	// seconds away, rather than being left with the old one until somebody
+	// reloads it. Kept fresh in the background, that is rare unless somebody
+	// asked for a refresh.
 	const refreshing = channelIds.some((channelId) => inFlight.has(`${kind}:${channelId}`));
 
 	return {

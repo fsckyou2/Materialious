@@ -113,7 +113,8 @@
 		"userLeft": "User left room"
 	},
 	"subscriptions": {
-		"manageSubscriptions": "Manage subscriptions"
+		"manageSubscriptions": "Manage subscriptions",
+		"refresh": "Refresh"
 	},
 	"playlist": {
 		"createPlaylist": "Create playlist",
