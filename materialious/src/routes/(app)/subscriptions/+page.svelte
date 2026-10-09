@@ -2,7 +2,12 @@
 	import { getFeed } from '$lib/api/index';
 	import type { PlaylistPageVideo, Video, VideoBase } from '$lib/api/model';
 	import { feedCacheStore, feedLoadingStore } from '$lib/store';
-	import { addToSubscriptionFeed, refreshWhenSeenAgain } from '$lib/subscriptionFeed';
+	import {
+		addToSubscriptionFeed,
+		feedRefreshingStore,
+		refreshSubscriptionFeed,
+		refreshWhenSeenAgain
+	} from '$lib/subscriptionFeed';
 	import { onMount } from 'svelte';
 	import InfiniteLoading, { type InfiniteEvent } from 'svelte-infinite-loading';
 	import ItemsList from '$lib/components/layout/ItemsList.svelte';
@@ -34,6 +39,20 @@
 </script>
 
 <nav class="right-align">
+	<!-- Fetches every channel again rather than serving what the instance holds,
+	     for somebody who knows a video has just gone up. -->
+	<button
+		class="surface-container-highest"
+		disabled={$feedRefreshingStore}
+		onclick={() => refreshSubscriptionFeed({ fresh: true }).catch(() => {})}
+	>
+		{#if $feedRefreshingStore}
+			<progress class="circle small"></progress>
+		{:else}
+			<i>refresh</i>
+		{/if}
+		<span>{$_('subscriptions.refresh')}</span>
+	</button>
 	<a class="button surface-container-highest" href={resolve('/subscriptions/manage', {})}>
 		{$_('subscriptions.manageSubscriptions')}
 	</a>

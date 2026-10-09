@@ -1,6 +1,7 @@
 import { isOwnBackend } from '$lib/shared';
 import { getSequelize, migrateDevices } from '$lib/server/database';
 import { authenticateDeviceByToken } from '$lib/server/devices';
+import { keepFeeds } from '$lib/server/browse';
 import { unsign } from 'cookie-signature';
 import { env } from '$env/dynamic/private';
 import { RateLimiter } from 'sveltekit-rate-limiter/server';
@@ -24,6 +25,14 @@ const deviceForbidden = [
 	/^\/api\/admin/,
 	/^\/api\/proxy/
 ];
+
+/**
+ * Brings the feed cache back from before the restart and starts keeping it
+ * fresh, so the first feed after a deploy is not a minute of fetching.
+ */
+export function init() {
+	keepFeeds();
+}
 
 let sequelizeAuthenticated = false;
 

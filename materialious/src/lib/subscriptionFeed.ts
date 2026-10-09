@@ -3,7 +3,7 @@ import type { PlaylistPageVideo, Video, VideoBase } from '$lib/api/model';
 import { localDb } from '$lib/dexie';
 import { extractUniqueId } from '$lib/feed';
 import { feedCacheStore, feedLoadingStore } from '$lib/store';
-import { get } from 'svelte/store';
+import { get, writable } from 'svelte/store';
 
 export type SupportedVideos = (VideoBase | Video | PlaylistPageVideo)[];
 
@@ -11,12 +11,44 @@ export type SupportedVideos = (VideoBase | Video | PlaylistPageVideo)[];
  * How long to leave the instance to finish before each look back.
  *
  * An answer is also partial while channels it served from an old copy are
- * being fetched again, and opening the page after a while away can mean every
- * one of a hundred and sixty at once - which the instance does a few at a
- * time, so YouTube does not refuse it. The looks spread out over most of a
- * minute to see that land, and then stop.
+ * being fetched again - after a refresh, every one of them, which the instance
+ * does a few at a time so YouTube does not refuse it. Looking back is a read of
+ * what it has in memory, so it is cheap to do often: the first looks come
+ * quickly, so channels show up as they land rather than in a few big jumps
+ * seconds apart, and they spread out over most of a minute and then stop.
  */
-const PARTIAL_RETRY_DELAYS_MS = [4000, 4000, 8000, 8000, 16000];
+const PARTIAL_RETRY_DELAYS_MS = [
+	1500, 1500, 2000, 2000, 3000, 3000, 3000, 4000, 4000, 5000, 5000, 8000, 8000, 8000
+];
+
+/**
+ * How old a channel may be when somebody asks for a refresh: anything older is
+ * fetched again. The instance does not go lower than this either.
+ */
+const REFRESH_FRESH_WITHIN_SECONDS = 60;
+
+/**
+ * Where the top of the feed is kept between visits, so that opening the page
+ * shows it at once rather than a spinner, and the newest is folded in when it
+ * arrives. This browser's only, and only the first screenful or so.
+ */
+const SNAPSHOT_KEY = 'subscriptionFeedSnapshot';
+const SNAPSHOT_SIZE = 60;
+
+/**
+ * Whether the feed is being gathered: from the first request until the
+ * instance says the answer is whole, or this gives up asking.
+ */
+export const feedRefreshingStore = writable(false);
+
+/**
+ * Bumped by every refresh, so that the looks back still scheduled by an older
+ * one stop rather than run alongside the new one's.
+ */
+let generation = 0;
+
+/** What is on screen only because the last visit left it, until confirmed. */
+let provisional: Set<string> | undefined;
 
 /**
  * How long a screen can sit unseen before coming back to it asks for the
@@ -96,8 +128,23 @@ function newestFirst(a: SupportedVideos[number], b: SupportedVideos[number]): nu
  * Where the same video arrives twice the newly fetched copy is the one kept:
  * it carries a fresher view count and, for anything recent, an exact date.
  */
-async function remember(videos: SupportedVideos): Promise<void> {
-	const showing = get(feedCacheStore).subscription ?? [];
+async function remember(videos: SupportedVideos, complete = false): Promise<void> {
+	let showing = get(feedCacheStore).subscription ?? [];
+
+	// What was put up from the last visit stays only until a whole answer says
+	// what the feed is now: otherwise a video since deleted, or from a channel
+	// since unsubscribed from, would be carried from visit to visit for ever.
+	if (complete && provisional) {
+		const current = new Set(videos.map(extractUniqueId));
+		const kept = provisional;
+
+		showing = showing.filter((video) => {
+			const id = extractUniqueId(video);
+			return !kept.has(id) || current.has(id);
+		});
+
+		provisional = undefined;
+	}
 
 	const byId = new Map<string, SupportedVideos[number]>();
 	for (const video of [...videos, ...showing]) {
@@ -105,10 +152,46 @@ async function remember(videos: SupportedVideos): Promise<void> {
 		if (!byId.has(id)) byId.set(id, video);
 	}
 
-	feedCacheStore.set({
-		...get(feedCacheStore),
-		subscription: await sortVideosByFavourites([...byId.values()].sort(newestFirst))
-	});
+	const subscription = await sortVideosByFavourites([...byId.values()].sort(newestFirst));
+
+	feedCacheStore.set({ ...get(feedCacheStore), subscription });
+
+	try {
+		localStorage.setItem(SNAPSHOT_KEY, JSON.stringify(subscription.slice(0, SNAPSHOT_SIZE)));
+	} catch {
+		// Full, or turned off: the next visit shows a spinner, as it always did.
+	}
+}
+
+/**
+ * Puts the feed from the last visit on screen, if this browser kept one.
+ *
+ * @returns whether there was one to show.
+ */
+export function showLastFeed(): boolean {
+	let saved: SupportedVideos | null;
+
+	try {
+		saved = JSON.parse(localStorage.getItem(SNAPSHOT_KEY) ?? 'null');
+	} catch {
+		return false;
+	}
+
+	if (!Array.isArray(saved) || saved.length === 0) return false;
+
+	feedCacheStore.set({ ...get(feedCacheStore), subscription: saved });
+	provisional = new Set(saved.map(extractUniqueId));
+
+	return true;
+}
+
+/** Forgets the feed kept between visits, for somebody signing out. */
+export function forgetLastFeed(): void {
+	try {
+		localStorage.removeItem(SNAPSHOT_KEY);
+	} catch {
+		// Nothing kept, or nothing reachable: either way nothing to forget.
+	}
 }
 
 /**
@@ -128,17 +211,25 @@ export async function addToSubscriptionFeed(videos: SupportedVideos): Promise<vo
  * missing for ever, and asking without end is how a screen ends up reloading
  * itself every few seconds.
  */
-function askAgainShortly(attempt = 0): void {
+function askAgainShortly(asOf: number, attempt = 0): void {
 	const delay = PARTIAL_RETRY_DELAYS_MS[attempt];
-	if (delay === undefined) return;
+
+	if (delay === undefined) {
+		feedRefreshingStore.set(false);
+		return;
+	}
 
 	setTimeout(async () => {
-		const feed = await getFeed(FEED_PAGE_SIZE, 1).catch(() => null);
-		if (!feed) return;
+		if (asOf !== generation) return;
 
-		await remember([...feed.notifications, ...feed.videos]);
+		const feed = await getFeed(FEED_PAGE_SIZE, 1, {}, { sameChannels: true }).catch(() => null);
+		if (asOf !== generation) return;
 
-		if (feed.partial) askAgainShortly(attempt + 1);
+		if (feed) await remember([...feed.notifications, ...feed.videos], !feed.partial);
+
+		// A look that failed is looked at again, like one that came back short.
+		if (!feed || feed.partial) askAgainShortly(asOf, attempt + 1);
+		else feedRefreshingStore.set(false);
 	}, delay);
 }
 
@@ -153,17 +244,34 @@ function askAgainShortly(attempt = 0): void {
  * logo while already looking at the feed is asking for exactly this, and the
  * router has nowhere to take them.
  */
-export function refreshSubscriptionFeed(): Promise<void> {
+export function refreshSubscriptionFeed(options: { fresh?: boolean } = {}): Promise<void> {
 	// The page's own load and a press on the logo can arrive together, and the
 	// two of them asking separately would fetch the same feed twice.
 	refreshing ??= (async () => {
 		lastRefreshedAt = Date.now();
+		generation += 1;
+		const asOf = generation;
 
-		const feed = await getFeed(FEED_PAGE_SIZE, 1);
+		feedRefreshingStore.set(true);
 
-		await remember([...feed.notifications, ...feed.videos]);
+		try {
+			// Pressing refresh asks the instance to fetch again whatever it has
+			// not fetched in the last minute, rather than serve what it holds.
+			const feed = await getFeed(
+				FEED_PAGE_SIZE,
+				1,
+				{},
+				options.fresh ? { freshWithinSeconds: REFRESH_FRESH_WITHIN_SECONDS } : {}
+			);
 
-		if (feed.partial) askAgainShortly();
+			await remember([...feed.notifications, ...feed.videos], !feed.partial);
+
+			if (feed.partial) askAgainShortly(asOf);
+			else feedRefreshingStore.set(false);
+		} catch (error) {
+			feedRefreshingStore.set(false);
+			throw error;
+		}
 	})().finally(() => {
 		refreshing = undefined;
 	});
