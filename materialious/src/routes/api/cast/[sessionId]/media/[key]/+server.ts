@@ -60,6 +60,12 @@ export async function GET({ params, request }) {
 				}
 				controller.enqueue(value);
 			} catch (err) {
+				// The receiver only learns that its range ended early, so the
+				// reason is said here or nowhere.
+				console.warn(
+					`cast: ${session.videoId} ${key} bytes ${start}-${end} failed:`,
+					err instanceof Error ? err.message : err
+				);
 				controller.error(err);
 			}
 		},

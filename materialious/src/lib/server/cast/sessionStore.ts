@@ -76,27 +76,47 @@ function makeRoom(): void {
 
 export async function createCastSession(
 	videoId: string,
-	userId: string | undefined
+	userId: string | undefined,
+	options: { acceptsHls?: boolean; fresh?: boolean } = {}
 ): Promise<CastSession> {
+	const acceptsHls = options.acceptsHls === true;
+
 	// Reuse a warm session for the same viewer and video: setting one up costs a
 	// PO token mint and a player fetch, and YouTube makes the first SABR request
-	// of a session wait out a backoff.
-	for (const session of sessions.values()) {
-		if (session.videoId === videoId && session.userId === userId) {
-			session.lastUsed = Date.now();
-			return session;
+	// of a session wait out a backoff. Only one set up for a receiver that plays
+	// the same formats, though: a Chromecast handed a television's HLS session
+	// could not play it.
+	//
+	// Not one that has stopped working, nor for a receiver asking for a new one
+	// because the last failed it: handing that back is the same address and
+	// the same state, and a stream that broke stayed broken.
+	for (const [id, session] of sessions) {
+		if (
+			session.videoId !== videoId ||
+			session.userId !== userId ||
+			session.acceptsHls !== acceptsHls
+		) {
+			continue;
 		}
+
+		if (session.broken || options.fresh) {
+			dropSession(id);
+			continue;
+		}
+
+		session.lastUsed = Date.now();
+		return session;
 	}
 
 	// A receiver that asks twice before the first setup finishes - a retry, or a
 	// phone and a TV starting the same video - would otherwise pay for it twice.
-	const key = `${videoId} ${userId ?? ''}`;
+	const key = `${videoId} ${userId ?? ''} ${acceptsHls}`;
 	const inFlight = pending.get(key);
 	if (inFlight) return inFlight;
 
 	const setup = (async () => {
 		const id = randomBytes(32).toString('base64url');
-		const session = await CastSession.create(id, videoId, userId);
+		const session = await CastSession.create(id, videoId, userId, { acceptsHls });
 
 		makeRoom();
 		sessions.set(id, session);

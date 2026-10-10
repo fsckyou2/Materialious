@@ -27,6 +27,20 @@ export type CastProfile = 'legacy' | 'modern';
 
 export type CastMediaSource = 'vod' | 'live';
 
+/** What a session hands a receiver: a DASH manifest, or YouTube's own HLS. */
+export type CastFormat = 'dash' | 'hls';
+
+/** The kind of address YouTube serves HLS playlists from, as opposed to media. */
+function isHlsPlaylist(url: URL): boolean {
+	return url.hostname === 'manifest.googlevideo.com' || url.pathname.startsWith('/api/manifest/');
+}
+
+/** How often an expired HLS playlist may send the session back for a new one. */
+const HLS_REFRESH_MIN_MS = 30_000;
+
+/** How many requests to YouTube in a row may fail before a session is given up on. */
+const BROKEN_AFTER_FAILURES = 2;
+
 /** One entry of the player response's adaptive formats. */
 type RawFormat = NonNullable<YT.VideoInfo['streaming_data']>['adaptive_formats'][number];
 
@@ -188,25 +202,191 @@ export class CastSession {
 	/** Player response entries, by format key. */
 	private rawFormats = new Map<string, RawFormat>();
 
+	/**
+	 * YouTube's HLS playlist for a live stream, where this session serves that
+	 * rather than its own DASH, and when it was last fetched.
+	 */
+	private hlsMaster?: { url: string; at: number };
+
+	/** Playlists YouTube has since replaced, and what replaced them. */
+	private readonly hlsReplaced = new Map<string, string>();
+
 	private constructor(
 		public readonly id: string,
 		public readonly videoId: string,
 		public readonly userId: string | undefined,
 		private innertube: Innertube,
-		private info: YT.VideoInfo | Mixins.MediaInfo
+		private info: YT.VideoInfo | Mixins.MediaInfo,
+		/** Whether the receiver said it can play HLS. */
+		public readonly acceptsHls: boolean
 	) {}
 
 	static async create(
 		id: string,
 		videoId: string,
-		userId: string | undefined
+		userId: string | undefined,
+		options: { acceptsHls?: boolean } = {}
 	): Promise<CastSession> {
 		const innertube = await getDownloadSession(videoId);
 		const info = await innertube.getInfo(videoId);
 
-		const session = new CastSession(id, videoId, userId, innertube, info);
-		await session.attachSabr();
+		const session = new CastSession(
+			id,
+			videoId,
+			userId,
+			innertube,
+			info,
+			options.acceptsHls === true
+		);
+
+		// A live stream is better served as YouTube's own HLS to a receiver that
+		// can play it. Over SABR every answer carries an order to wait four or
+		// five seconds before the next request, and that wait holds up every
+		// request of the session: audio and video take turns, so each got a new
+		// segment about every ten seconds, against segments two seconds long.
+		// Playback ran dry within a minute and stopped, over and over. HLS has
+		// no such wait - it is what YouTube's own apps play live from.
+		if (session.acceptsHls && info.basic_info.is_live) {
+			try {
+				session.hlsMaster = { url: await session.fetchHlsMaster(), at: Date.now() };
+			} catch (error) {
+				console.warn(
+					`cast: no HLS for live ${videoId}, serving DASH instead:`,
+					error instanceof Error ? error.message : error
+				);
+			}
+		}
+
+		if (!session.hlsMaster) await session.attachSabr();
+
 		return session;
+	}
+
+	/** What this session serves a receiver. */
+	get format(): CastFormat {
+		return this.hlsMaster ? 'hls' : 'dash';
+	}
+
+	/**
+	 * The HLS playlist YouTube offers for a live stream.
+	 *
+	 * Only the Android client is given one; the web and television clients are
+	 * refused a live stream outright without a session of their own.
+	 */
+	private async fetchHlsMaster(): Promise<string> {
+		const android = await this.innertube.getBasicInfo(this.videoId, { client: 'ANDROID' });
+		const url = android.streaming_data?.hls_manifest_url;
+
+		if (!url) {
+			throw new Error(android.playability_status?.reason || 'YouTube offered no HLS playlist');
+		}
+
+		return url;
+	}
+
+	/**
+	 * Fetches a playlist, going back for a new master when YouTube says the one
+	 * it came from has expired - which its addresses do after a few hours, well
+	 * within a stream somebody leaves running.
+	 */
+	private async fetchHlsPlaylist(target: string, signal: AbortSignal): Promise<string> {
+		const first = await fetch(this.hlsReplaced.get(target) ?? target, { signal });
+		if (first.ok) return first.text();
+
+		const master = this.hlsMaster;
+		const expired = first.status === 403 || first.status === 404 || first.status === 410;
+
+		if (!master || !expired || Date.now() - master.at < HLS_REFRESH_MIN_MS) {
+			throw new Error(`YouTube answered ${first.status} for the live playlist`);
+		}
+
+		const previous = master.url;
+		const renewed = await this.fetchHlsMaster();
+		this.hlsMaster = { url: renewed, at: Date.now() };
+		this.hlsReplaced.set(previous, renewed);
+
+		let replacement = renewed;
+
+		// A variant is found again in the new master by its itag.
+		if (target !== previous) {
+			const itag = target.match(/\/itag\/(\d+)\//)?.[1];
+			const lines = (await (await fetch(renewed, { signal })).text()).split('\n');
+			const found = itag ? lines.find((line) => line.includes(`/itag/${itag}/`)) : undefined;
+
+			if (!found) throw new Error(`The renewed live playlist has no itag ${itag}`);
+
+			replacement = found.trim();
+		}
+
+		this.hlsReplaced.set(target, replacement);
+
+		const second = await fetch(replacement, { signal });
+		if (!second.ok) throw new Error(`YouTube answered ${second.status} for the live playlist`);
+
+		return second.text();
+	}
+
+	/**
+	 * Answers a receiver's request for the live stream's HLS: the master
+	 * playlist when no target is given, otherwise the playlist or media segment
+	 * at that address, which has to be one of YouTube's.
+	 *
+	 * Playlists are rewritten so every address in them comes back through
+	 * `proxyBase`: the receiver talks only to this instance, like the rest of a
+	 * cast session, and is never handed an address somewhere else.
+	 */
+	async getHls(
+		target: string | null,
+		proxyBase: string,
+		maxHeight: number,
+		signal: AbortSignal
+	): Promise<{ playlist: string } | { media: Response }> {
+		this.lastUsed = Date.now();
+
+		const master = this.hlsMaster;
+		if (!master) throw new Error('This session does not serve HLS');
+
+		const address = new URL(target ?? master.url);
+
+		if (address.protocol !== 'https:' || !address.hostname.endsWith('.googlevideo.com')) {
+			throw new Error('Not a YouTube media address');
+		}
+
+		if (!isHlsPlaylist(address)) {
+			return { media: await fetch(address, { signal }) };
+		}
+
+		const through = (url: string) => `${proxyBase}?u=${encodeURIComponent(url)}`;
+		const lines = (await this.fetchHlsPlaylist(address.toString(), signal)).split('\n');
+
+		// The master lists one variant per quality: a description line, then its
+		// address. Anything taller than the receiver wants is left out, unless
+		// that would leave nothing.
+		const tooTall = (line: string) =>
+			Number(line.match(/RESOLUTION=\d+x(\d+)/)?.[1] ?? 0) > maxHeight;
+		const keepsSomething = lines.some(
+			(line) => line.startsWith('#EXT-X-STREAM-INF') && !tooTall(line)
+		);
+
+		const out: string[] = [];
+
+		for (let index = 0; index < lines.length; index += 1) {
+			const line = lines[index];
+
+			if (keepsSomething && line.startsWith('#EXT-X-STREAM-INF') && tooTall(line)) {
+				index += 1;
+				continue;
+			}
+
+			if (line.startsWith('https://')) {
+				out.push(through(line.trim()));
+				continue;
+			}
+
+			out.push(line.replace(/URI="(https:\/\/[^"]+)"/g, (_match, url) => `URI="${through(url)}"`));
+		}
+
+		return { playlist: out.join('\n') };
 	}
 
 	get title(): string {
@@ -364,7 +544,39 @@ export class CastSession {
 		/** Live probes ask past the edge, where an empty answer is the answer. */
 		allowEmpty?: boolean;
 	}): Promise<{ data: Uint8Array; sequenceNumber: number | null; live?: LiveMetadata }> {
-		return this.takeTurn(() => this.performSabrRequest(options));
+		try {
+			const answer = await this.takeTurn(() => this.performSabrRequest(options));
+			this.failuresInARow = 0;
+			return answer;
+		} catch (error) {
+			this.failuresInARow += 1;
+
+			// Said here, because the receiver is only ever told that its range
+			// ended early, and that is all anybody would otherwise know.
+			console.warn(
+				`cast: ${this.videoId} at ${options.playerTime ?? options.startTime}s failed` +
+					` (${this.failuresInARow} in a row):`,
+				error instanceof Error ? error.message : error
+			);
+
+			throw error;
+		}
+	}
+
+	/** How many requests to YouTube have failed since the last that worked. */
+	private failuresInARow = 0;
+
+	/**
+	 * Whether this session has stopped working, so it is not handed out again.
+	 *
+	 * A television whose stream fails asks for the video again, and used to be
+	 * given this same session back - the same address, the same state - so a
+	 * session that had gone wrong stayed wrong, and the video stopped for good
+	 * halfway through. One failure is often just the network; a run of them is
+	 * the session.
+	 */
+	get broken(): boolean {
+		return this.failuresInARow >= BROKEN_AFTER_FAILURES;
 	}
 
 	/**

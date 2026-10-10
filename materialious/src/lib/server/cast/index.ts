@@ -1,5 +1,5 @@
 export { CastSession, SegmentNotReadyError } from './CastSession';
-export type { CastProfile, CastMediaSource } from './CastSession';
+export type { CastFormat, CastProfile, CastMediaSource } from './CastSession';
 export { createCastSession, getCastSession } from './sessionStore';
 export { parseSegmentIndex } from './sidx';
 export { parseWebmIndex } from './webm';

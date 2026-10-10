@@ -5,7 +5,18 @@ import { isOwnBackend } from '$lib/shared/index';
 import { castBaseUrl } from '$lib/server/cast';
 
 const zCastSchema = z.object({
-	videoId: z.string().length(11)
+	videoId: z.string().length(11),
+	/**
+	 * What the receiver can play besides DASH. A television that says "hls" is
+	 * given YouTube's own HLS for a live stream, which plays smoothly where the
+	 * gateway's DASH cannot keep up. Left out, everything is DASH as before.
+	 */
+	formats: z.array(z.string()).optional(),
+	/**
+	 * A receiver whose stream failed, asking for a new session rather than the
+	 * one it had - which would hand back the same address that just failed.
+	 */
+	fresh: z.boolean().optional()
 });
 
 /**
@@ -30,8 +41,16 @@ export async function POST(event) {
 
 	let session;
 	try {
-		session = await createCastSession(data.data.videoId, locals.userId);
+		session = await createCastSession(data.data.videoId, locals.userId, {
+			acceptsHls: data.data.formats?.includes('hls') === true,
+			fresh: data.data.fresh === true
+		});
 	} catch (err) {
+		// Said here as well as to the receiver, which may well not show it.
+		console.warn(
+			`cast: could not open ${data.data.videoId}:`,
+			err instanceof Error ? err.message : err
+		);
 		throw error(500, err instanceof Error ? err.message : 'Failed to open a cast session');
 	}
 
@@ -43,6 +62,7 @@ export async function POST(event) {
 		author: session.author,
 		duration: session.durationSeconds,
 		source: session.source,
-		manifestUrl: `${baseUrl}/manifest`
+		format: session.format,
+		manifestUrl: session.format === 'hls' ? `${baseUrl}/hls` : `${baseUrl}/manifest`
 	});
 }
