@@ -1715,6 +1715,7 @@ function byRecency(now: number): (a: BrowseVideo, b: BrowseVideo) => number {
  * collaborations, since an uploader's copy says more about the video.
  */
 function mergeChannels(channels: { videos: BrowseVideo[] }[]): BrowseVideo[] {
+	const live: BrowseVideo[] = [];
 	const dated: BrowseVideo[] = [];
 	const undated: BrowseVideo[][] = [];
 	const seen = new Set<string>();
@@ -1726,7 +1727,12 @@ function mergeChannels(channels: { videos: BrowseVideo[] }[]): BrowseVideo[] {
 			if (seen.has(video.videoId)) continue;
 			seen.add(video.videoId);
 
-			if (isDated(video)) dated.push(video);
+			// On now, so first - and on its own, because a stream in progress
+			// is dated by how many are watching rather than by when it went up,
+			// and was dealt in among the undated after every dated video, below
+			// streams that ended days ago.
+			if (video.liveNow) live.push(video);
+			else if (isDated(video)) dated.push(video);
 			else rest.push(video);
 		}
 
@@ -1745,7 +1751,7 @@ function mergeChannels(channels: { videos: BrowseVideo[] }[]): BrowseVideo[] {
 		}
 	}
 
-	return [...dated, ...dealt];
+	return [...live, ...dated, ...dealt];
 }
 
 /**
