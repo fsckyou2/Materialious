@@ -79,8 +79,14 @@ async function sortVideosByFavourites(videos: SupportedVideos): Promise<Supporte
 	const regularVideos: SupportedVideos = [];
 	const favouriteVideos: SupportedVideos = [];
 
+	const liveVideos: SupportedVideos = [];
+
 	videos.forEach((video) => {
-		if (favouritedChannels.includes(video.authorId)) {
+		// On now, so ahead even of starred channels: a starred channel's
+		// streams from last week used to sit above one that was live.
+		if (isLiveNow(video)) {
+			liveVideos.push(video);
+		} else if (favouritedChannels.includes(video.authorId)) {
 			video.promotedBy = 'favourited';
 			favouriteVideos.push(video);
 		} else {
@@ -92,7 +98,12 @@ async function sortVideosByFavourites(videos: SupportedVideos): Promise<Supporte
 		}
 	});
 
-	return [...favouriteVideos, ...regularVideos];
+	return [...liveVideos, ...favouriteVideos, ...regularVideos];
+}
+
+/** Being streamed right now, which only this instance's own feed says. */
+function isLiveNow(item: SupportedVideos[number]): boolean {
+	return 'liveNow' in item && item.liveNow === true;
 }
 
 /** When an item went up, for ordering. Anything undated sorts last. */
@@ -106,8 +117,14 @@ function publishedAt(item: SupportedVideos[number]): number {
 	return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : 0;
 }
 
-/** Newest first, and by id where two went up at the same moment. */
+/**
+ * Live now first, then newest first, and by id where two went up at the same
+ * moment. A stream in progress has no upload time at all, and would otherwise
+ * sort last of everything.
+ */
 function newestFirst(a: SupportedVideos[number], b: SupportedVideos[number]): number {
+	if (isLiveNow(a) !== isLiveNow(b)) return isLiveNow(a) ? -1 : 1;
+
 	const difference = publishedAt(b) - publishedAt(a);
 	if (difference !== 0) return difference;
 
