@@ -34,6 +34,16 @@
 
 	let { video = $bindable(), playlistId = '', sideways = $bindable(false) }: Props = $props();
 
+	/**
+	 * Being streamed right now. Invidious says so as `liveVideo`, which it also
+	 * sets on a stream that has ended and has a length; this instance's own
+	 * feed says `liveNow`, and only of one that is on.
+	 */
+	let streamingNow = $derived(
+		('liveNow' in video && video.liveNow === true) ||
+			('liveVideo' in video && video.liveVideo === true && video.lengthSeconds === 0)
+	);
+
 	function getRelativePublished() {
 		if (!('published' in video)) return '';
 		return video.published && video.published !== 0
@@ -327,44 +337,44 @@
 				{/if}
 
 				{#if !$isAndroidTvStore}
-    				{#if progress}
-    					<button
-    						class="chip surface-container-highest"
-    						onclick={(e) => {
-    							e.stopPropagation();
-    							e.preventDefault();
-    							(async () => {
-    								await deleteWatchHistoryItem(video.videoId);
-    								progress = undefined;
-    								thumbnailActionsVisible = false;
-    							})();
-    						}}
-    					>
-    						<i>check</i>
-    					</button>
-    				{:else}
-    					<button
-    						class="chip surface-container-highest"
-    						onclick={(e) => {
-    							e.stopPropagation();
-    							e.preventDefault();
-    							(async () => {
-    								await saveWatchHistory(video, 1);
-    								progress = '0';
-    							})();
-    						}}
-    					>
-    						<i>visibility</i>
-    					</button>
-    				{/if}
-    				{#if 'promotedBy' in video && video.promotedBy === 'favourited'}
-    					<div
-    						class="chip primary"
-    						style="position: absolute; top: 8px; left: 8px; right: auto; z-index: 2;"
-    					>
-    						<i>star</i>
-    					</div>
-    				{/if}
+					{#if progress}
+						<button
+							class="chip surface-container-highest"
+							onclick={(e) => {
+								e.stopPropagation();
+								e.preventDefault();
+								(async () => {
+									await deleteWatchHistoryItem(video.videoId);
+									progress = undefined;
+									thumbnailActionsVisible = false;
+								})();
+							}}
+						>
+							<i>check</i>
+						</button>
+					{:else}
+						<button
+							class="chip surface-container-highest"
+							onclick={(e) => {
+								e.stopPropagation();
+								e.preventDefault();
+								(async () => {
+									await saveWatchHistory(video, 1);
+									progress = '0';
+								})();
+							}}
+						>
+							<i>visibility</i>
+						</button>
+					{/if}
+					{#if 'promotedBy' in video && video.promotedBy === 'favourited'}
+						<div
+							class="chip primary"
+							style="position: absolute; top: 8px; left: 8px; right: auto; z-index: 2;"
+						>
+							<i>star</i>
+						</div>
+					{/if}
 				{/if}
 			</div>
 			{#if progress}
@@ -375,20 +385,18 @@
 					max={video.lengthSeconds}
 				></progress>
 			{/if}
-			{#if !('liveVideo' in video) || !video.liveVideo}
-				{#if video.lengthSeconds !== 0}
-					<div
-						class="absolute right bottom small-margin black white-text small-text thumbnail-corner"
-					>
-						&nbsp;{videoLength(video.lengthSeconds)}&nbsp;
-					</div>
-				{/if}
-			{:else if video.lengthSeconds !== 0}
+			<!-- How long it runs, in the corner; a stream that is on now has no
+			     length yet and says it is live there instead. -->
+			{#if streamingNow}
 				<div class="absolute right bottom small-margin red white-text small-text thumbnail-corner">
-					{$_('thumbnail.live')}
+					&nbsp;{$_('thumbnail.live')}&nbsp;
 				</div>
-			{:else}
-				<h3>{$_('thumbnail.live')}</h3>
+			{:else if video.lengthSeconds > 0}
+				<div
+					class="absolute right bottom small-margin black white-text small-text thumbnail-corner"
+				>
+					&nbsp;{videoLength(video.lengthSeconds)}&nbsp;
+				</div>
 			{/if}
 		</a>
 	</div>
