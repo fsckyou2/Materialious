@@ -12,6 +12,7 @@ import { LiveMetadata } from 'googlevideo/protos';
 import type { CacheManager, RequestMetadataManager } from 'googlevideo/utils';
 import type { SabrFormat } from 'googlevideo/shared-types';
 import { getDownloadSession } from '@materialious/shared/download';
+import { getSignedInSession } from './signedIn';
 import { parseSegmentIndex, type SegmentIndexEntry } from './sidx';
 import { parseWebmIndex } from './webm';
 import { buildLiveManifest, type LiveFormat } from './liveManifest';
@@ -225,10 +226,37 @@ export class CastSession {
 		id: string,
 		videoId: string,
 		userId: string | undefined,
-		options: { acceptsHls?: boolean } = {}
+		options: { acceptsHls?: boolean; youtubeCookie?: string } = {}
 	): Promise<CastSession> {
-		const innertube = await getDownloadSession(videoId);
-		const info = await innertube.getInfo(videoId);
+		let innertube = await getDownloadSession(videoId);
+		let info = await innertube.getInfo(videoId);
+
+		// Some videos YouTube plays only to somebody signed in - and lately,
+		// from this address, nearly all of them ("Sign in to confirm you're not
+		// a bot"). Those, and only those, are asked for again as the viewer's
+		// own account where the receiver brought its cookies, as the website
+		// does: everything else stays anonymous.
+		if (info.playability_status?.status === 'LOGIN_REQUIRED' && options.youtubeCookie) {
+			try {
+				const signedIn = await getSignedInSession(options.youtubeCookie, videoId);
+				const signedInInfo = await signedIn.getInfo(videoId);
+
+				if (signedInInfo.streaming_data) {
+					innertube = signedIn;
+					info = signedInInfo;
+				} else {
+					console.warn(
+						`cast: ${videoId} was refused to the signed-in account too:`,
+						signedInInfo.playability_status?.reason
+					);
+				}
+			} catch (error) {
+				console.warn(
+					`cast: could not sign in for ${videoId}:`,
+					error instanceof Error ? error.message : error
+				);
+			}
+		}
 
 		const session = new CastSession(
 			id,
@@ -274,8 +302,13 @@ export class CastSession {
 	 * refused a live stream outright without a session of their own.
 	 */
 	private async fetchHlsMaster(): Promise<string> {
+		// A signed-in session's own answer may already carry one, and the
+		// Android client does not take a browser's cookies.
+		const own = this.info.streaming_data?.hls_manifest_url;
+		if (own && this.innertube.session.logged_in) return own;
+
 		const android = await this.innertube.getBasicInfo(this.videoId, { client: 'ANDROID' });
-		const url = android.streaming_data?.hls_manifest_url;
+		const url = android.streaming_data?.hls_manifest_url ?? own;
 
 		if (!url) {
 			throw new Error(android.playability_status?.reason || 'YouTube offered no HLS playlist');
@@ -410,7 +443,10 @@ export class CastSession {
 		const streamingData = this.info.streaming_data;
 
 		if (!streamingData) {
-			throw new Error('Video has no streaming data');
+			// Said in YouTube's words, which is what anybody looking at a
+			// television that will not play wants to know.
+			const playability = this.info.playability_status;
+			throw new Error(playability?.reason || playability?.status || 'Video has no streaming data');
 		}
 
 		const adaptive = streamingData.adaptive_formats ?? [];

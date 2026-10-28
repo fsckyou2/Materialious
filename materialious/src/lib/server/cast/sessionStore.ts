@@ -77,7 +77,7 @@ function makeRoom(): void {
 export async function createCastSession(
 	videoId: string,
 	userId: string | undefined,
-	options: { acceptsHls?: boolean; fresh?: boolean } = {}
+	options: { acceptsHls?: boolean; fresh?: boolean; youtubeCookie?: string } = {}
 ): Promise<CastSession> {
 	const acceptsHls = options.acceptsHls === true;
 
@@ -116,7 +116,10 @@ export async function createCastSession(
 
 	const setup = (async () => {
 		const id = randomBytes(32).toString('base64url');
-		const session = await CastSession.create(id, videoId, userId, { acceptsHls });
+		const session = await CastSession.create(id, videoId, userId, {
+			acceptsHls,
+			youtubeCookie: options.youtubeCookie
+		});
 
 		makeRoom();
 		sessions.set(id, session);
