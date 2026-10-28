@@ -942,16 +942,28 @@ const FEED_CACHE_MS = 30 * 60 * 1000;
  * instead, a feed is whole and current the moment it is asked for. Well inside
  * FEED_CACHE_MS, so that nothing anybody asks for has gone stale.
  */
-const KEEP_FRESH_AFTER_MS = 10 * 60 * 1000;
+const KEEP_FRESH_AFTER_MS = 20 * 60 * 1000;
 
 /**
  * How often the stalest channel is fetched, one at a time.
  *
- * Slow on purpose. Two hundred channels every ten minutes is one request every
- * three seconds - nothing like the bursts YouTube has refused - and a channel
- * that falls behind is still fetched the moment somebody asks.
+ * Slow on purpose. At one every three seconds, around the clock, this was
+ * the bulk of everything the instance asked YouTube - some thirty thousand
+ * channel pages a day - and soon after YouTube began asking the address to
+ * prove it was not a bot before it would play anything. Whether or not that
+ * was the cause, it was the obvious thing to ask less of. A channel that
+ * falls behind is still fetched the moment somebody asks.
  */
-const KEEP_FRESH_EVERY_MS = 3_000;
+const KEEP_FRESH_EVERY_MS = 5_000;
+
+/**
+ * How long after the last feed anybody asked for channels are still kept
+ * fresh. Nobody is looking overnight, and nothing needs fetching for them.
+ */
+const KEEP_FRESH_WHILE_IN_USE_MS = 6 * 60 * 60 * 1000;
+
+/** When anybody last asked for a feed. */
+let lastFeedAskedAt = 0;
 
 /**
  * How long after somebody last asked for a channel it is still kept fresh.
@@ -1446,6 +1458,7 @@ function keepOneFresh(): void {
 	if (keepingFresh) return;
 
 	const now = Date.now();
+	if (now - lastFeedAskedAt > KEEP_FRESH_WHILE_IN_USE_MS) return;
 
 	// Channels nobody has asked about in days are let go of.
 	for (const [key, askedAt] of wanted) {
@@ -1771,6 +1784,7 @@ export async function getFeed(
 	options: { kind?: FeedKind; offset?: number; limit?: number; freshWithin?: number } = {}
 ): Promise<FeedPage> {
 	keepFeeds();
+	lastFeedAskedAt = Date.now();
 
 	// An offset is how far somebody has scrolled, and nobody scrolls past what
 	// is kept. Left unbounded it is instead an instruction to go as deep as

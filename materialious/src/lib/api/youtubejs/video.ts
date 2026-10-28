@@ -174,11 +174,19 @@ export async function getVideoPageYTjs(videoId: string): Promise<VideoPlay> {
 
 	const descString = video.secondary_info.description?.toString() || '';
 
+	// Whose video it is. The player's answer says so, but a refused one - "Sign
+	// in to confirm you're not a bot" - carries no details at all, and the page
+	// built its link to the channel out of nothing and stopped dead. The watch
+	// page's own byline still names the channel, so it stands in.
+	const owner = video.secondary_info.owner?.author;
+	const authorId = video.basic_info.channel_id || owner?.id || '';
+	const author = video.basic_info.author || owner?.name || 'Unknown';
+
 	let authorThumbnails: Image[];
-	if (video.basic_info.channel_id) {
-		const channel = await getChannelCached(video.basic_info.channel_id);
+	if (authorId) {
+		const channel = await getChannelCached(authorId);
 		authorThumbnails = channel.metadata.avatar as Image[];
-		await associateAvatar(video.basic_info.channel_id, authorThumbnails);
+		await associateAvatar(authorId, authorThumbnails);
 	} else {
 		authorThumbnails = [];
 	}
@@ -278,8 +286,8 @@ export async function getVideoPageYTjs(videoId: string): Promise<VideoPlay> {
 		recommendedVideos: recommendedVideos,
 		authorThumbnails: authorThumbnails,
 		captions: [],
-		authorId: video.basic_info.channel_id || '',
-		authorUrl: `/channel/${video.basic_info.channel_id}`,
+		authorId,
+		authorUrl: `/channel/${authorId}`,
 		authorVerified: false,
 		description: descString,
 		descriptionHtml: video.secondary_info.description?.toHTML() || descString,
@@ -296,7 +304,7 @@ export async function getVideoPageYTjs(videoId: string): Promise<VideoPlay> {
 		unplayable: refusalOf(video, signedInTried),
 		videoId: videoId,
 		videoThumbnails: video.basic_info.thumbnail as Thumbnail[],
-		author: video.basic_info.author || 'Unknown',
+		author,
 		lengthSeconds: video.basic_info.duration || 0,
 		subCountText: video.secondary_info.owner?.subscriber_count.text || '',
 		keywords: video.basic_info.keywords || [],
