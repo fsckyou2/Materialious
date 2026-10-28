@@ -21,9 +21,28 @@ const REQUEST_KEY = 'O43z0dpjhgX20SCx4KAo';
  * one.
  */
 export async function getSignedInSession(cookie: string, videoId: string): Promise<Innertube> {
+	// The library sends the cookies only with its API calls, so the session
+	// was set up - its visitor identity, its configuration - anonymously, from
+	// an address YouTube is asking to prove it is not a bot, and every signed-in
+	// call after it came back "logged out". The website sends them with
+	// everything for youtube.com, and is let through; so does this. Only
+	// youtube.com: not the video servers, nor anything else.
+	const signedInFetch: typeof fetch = (input, init) => {
+		const url = new URL(input instanceof Request ? input.url : input.toString());
+		const host = url.hostname.toLowerCase();
+		if (host !== 'youtube.com' && !host.endsWith('.youtube.com')) return fetch(input, init);
+
+		const headers = new Headers(
+			init?.headers ?? (input instanceof Request ? input.headers : undefined)
+		);
+		headers.set('cookie', cookie);
+
+		return fetch(input, { ...init, headers });
+	};
+
 	const create = (poToken?: string) =>
 		Innertube.create({
-			fetch,
+			fetch: signedInFetch,
 			cookie,
 			// Its own cache: an anonymous session's visitor data must not end up
 			// as part of an account's identity, nor the other way about.
