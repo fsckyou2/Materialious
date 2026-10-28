@@ -62,25 +62,35 @@
 	const avatar = new Avatar({ src: proxyGoogleImage(getBestThumbnail(channel.authorThumbnails)) });
 </script>
 
+{#snippet byline()}
+	<nav style="gap: 0.5em;">
+		<img class="circle" {...avatar.image} alt="Channel profile" />
+		<button
+			class="circle small secondary-container"
+			{...mergeAttrs(avatar.fallback, {
+				style: 'text-transform: uppercase;border-radius: 2.5rem !important;'
+			})}>{channel.author[0]}</button
+		>
+		<div>
+			<p style="margin: 0;" class="bold">
+				{$isAndroidTvStore ? channel.author : truncate(channel.author, 14)}
+			</p>
+			<p style="margin: 0;">{channel.subCountText}</p>
+		</div>
+	</nav>
+{/snippet}
+
 <nav>
-	<a href={resolve(`/channel/[authorId]`, { authorId: channel.authorId })}>
-		<nav style="gap: 0.5em;">
-			<img class="circle" {...avatar.image} alt="Channel profile" />
-			<button
-				class="circle small secondary-container"
-				{...mergeAttrs(avatar.fallback, {
-					style: 'text-transform: uppercase;border-radius: 2.5rem !important;'
-				})}>{channel.author[0]}</button
-			>
-			<div>
-				<p style="margin: 0;" class="bold">
-					{$isAndroidTvStore ? channel.author : truncate(channel.author, 14)}
-				</p>
-				<p style="margin: 0;">{channel.subCountText}</p>
-			</div>
-		</nav>
-	</a>
-	{#if !hideSubscribe}
+	<!-- A channel nobody could name has no page to link to, nor anything to
+	     subscribe to: building the link anyway threw and took the page down. -->
+	{#if channel.authorId}
+		<a href={resolve(`/channel/[authorId]`, { authorId: channel.authorId })}>
+			{@render byline()}
+		</a>
+	{:else}
+		{@render byline()}
+	{/if}
+	{#if !hideSubscribe && channel.authorId}
 		{#if $invidiousAuthStore || isYTBackend()}
 			<nav class="group split">
 				<button
