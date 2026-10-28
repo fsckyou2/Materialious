@@ -48,9 +48,20 @@ export async function getSignedInSession(cookie: string, videoId: string): Promi
 
 	const context = data?.responseContext?.mainAppWebResponseContext;
 
-	if (context?.loggedOut) {
-		throw new Error('The saved YouTube account is signed out; save its cookies again');
-	}
+	// What the account looked like to YouTube, for when it is not what was
+	// expected. Names only: the values are the account.
+	const names = cookie
+		.split(';')
+		.map((pair) => pair.split('=')[0].trim())
+		.filter(Boolean);
+	const playability = (data as { playabilityStatus?: { status?: string; reason?: string } })
+		?.playabilityStatus;
+	console.log(
+		`cast: signed-in probe for ${videoId}: http ${answer.status_code},` +
+			` loggedOut ${context?.loggedOut}, account id ${context?.datasyncId ? 'present' : 'absent'},` +
+			` playability ${playability?.status} ${playability?.reason ?? ''},` +
+			` cookies [${names.join(', ')}], logged_in ${probe.session.logged_in}`
+	);
 
 	// Written "<account>||<delegated account>", where only the first is wanted.
 	const binding = context?.datasyncId?.split('||')[0] || videoId;
