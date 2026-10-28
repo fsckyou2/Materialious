@@ -65,20 +65,17 @@ export async function getSignedInSession(cookie: string, videoId: string): Promi
 
 	const context = data?.responseContext?.mainAppWebResponseContext;
 
-	// What the account looked like to YouTube, for when it is not what was
-	// expected. Names only: the values are the account.
-	const names = cookie
-		.split(';')
-		.map((pair) => pair.split('=')[0].trim())
-		.filter(Boolean);
-	console.log(
-		`cast: signed-in session for ${videoId}: http ${answer.status_code},` +
-			` loggedOut ${context?.loggedOut}, account id ${context?.datasyncId ? 'present' : 'absent'},` +
-			` cookies [${names.join(', ')}]`
-	);
-
 	if (context?.loggedOut) {
-		throw new Error('The saved YouTube account is signed out; save its cookies again');
+		// Which cookies were there, for telling an incomplete set from one
+		// Google has since signed out. Names only: the values are the account.
+		const names = cookie
+			.split(';')
+			.map((pair) => pair.split('=')[0].trim())
+			.filter(Boolean);
+
+		throw new Error(
+			`The saved YouTube account is signed out (cookies: ${names.join(', ')}); save its cookies again`
+		);
 	}
 
 	// Written "<account>||<delegated account>", where only the first is wanted.
