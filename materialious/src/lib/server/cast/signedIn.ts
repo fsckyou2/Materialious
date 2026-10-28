@@ -54,12 +54,10 @@ export async function getSignedInSession(cookie: string, videoId: string): Promi
 
 	const probe = await create();
 
-	const answer = await probe.actions.execute('/player', {
-		videoId,
-		contentCheckOk: true,
-		racyCheckOk: true,
-		parse: false
-	});
+	// Which account the cookies are, from a page YouTube does not bot-check:
+	// asking for the video itself without a token is exactly what it refuses,
+	// and the refusal says nothing about who asked.
+	const answer = await probe.actions.execute('/guide', { parse: false });
 
 	const data = (typeof answer.data === 'string' ? JSON.parse(answer.data) : answer.data) as {
 		responseContext?: { mainAppWebResponseContext?: { datasyncId?: string; loggedOut?: boolean } };
@@ -73,14 +71,15 @@ export async function getSignedInSession(cookie: string, videoId: string): Promi
 		.split(';')
 		.map((pair) => pair.split('=')[0].trim())
 		.filter(Boolean);
-	const playability = (data as { playabilityStatus?: { status?: string; reason?: string } })
-		?.playabilityStatus;
 	console.log(
-		`cast: signed-in probe for ${videoId}: http ${answer.status_code},` +
+		`cast: signed-in session for ${videoId}: http ${answer.status_code},` +
 			` loggedOut ${context?.loggedOut}, account id ${context?.datasyncId ? 'present' : 'absent'},` +
-			` playability ${playability?.status} ${playability?.reason ?? ''},` +
-			` cookies [${names.join(', ')}], logged_in ${probe.session.logged_in}`
+			` cookies [${names.join(', ')}]`
 	);
+
+	if (context?.loggedOut) {
+		throw new Error('The saved YouTube account is signed out; save its cookies again');
+	}
 
 	// Written "<account>||<delegated account>", where only the first is wanted.
 	const binding = context?.datasyncId?.split('||')[0] || videoId;
