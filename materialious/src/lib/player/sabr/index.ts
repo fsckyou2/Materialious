@@ -45,6 +45,10 @@ export async function injectSabr(
 	sabrAdapter.onReloadPlayerResponse(async (reloadContext) => {
 		if (!video.ytjs) return;
 
+		// A signed-in session asked without its token is bot-checked like nobody
+		// at all, and the reload comes back with nothing to play.
+		const poToken = video.ytjs.innertube.session.logged_in ? get(poTokenCacheStore) : undefined;
+
 		const reloadedInfo = await video.ytjs.innertube.actions.execute('/player', {
 			videoId: video.videoId,
 			contentCheckOk: true,
@@ -54,7 +58,8 @@ export async function injectSabr(
 					signatureTimestamp: video.ytjs.innertube.session.player?.signature_timestamp
 				},
 				reloadPlaybackContext: reloadContext
-			}
+			},
+			...(poToken ? { serviceIntegrityDimensions: { poToken } } : {})
 		});
 
 		const parsedInfo = new YT.VideoInfo(

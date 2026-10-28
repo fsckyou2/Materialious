@@ -28,6 +28,8 @@ export interface VideoIntermediate {
 	video: YT.VideoInfo;
 	clientPlaybackNonce: string;
 	rawPlayerResponse: import('youtubei.js').ApiResponse;
+	/** The token the signed-in request was made with, if it was. */
+	poToken?: string;
 	authorThumbnails: Image[];
 	descString: string;
 	recommendedVideos: VideoBase[];
@@ -59,6 +61,39 @@ function poTokenBinding(
 
 	// Written "<account>||<delegated account>", where only the first is wanted.
 	return datasyncId?.split('||')[0] || videoId;
+}
+
+const REQUEST_KEY = 'O43z0dpjhgX20SCx4KAo';
+
+function platformMinter(): (requestKey: string, visitorData: string) => Promise<string> {
+	switch (Capacitor.getPlatform()) {
+		case 'electron':
+			return window.electronAPI.generatePoToken;
+		case 'android':
+			return androidPoTokenMinter;
+		default:
+			return webPoTokenMinter;
+	}
+}
+
+/**
+ * A playback token for a signed-in session, bound to its account.
+ *
+ * Which account that is comes from the guide, which YouTube answers without
+ * a bot check: the player's answer names the account too, but asking it
+ * without a token is exactly what gets refused.
+ */
+async function mintForAccount(innertube: Innertube): Promise<string | undefined> {
+	const answer = await innertube.actions.execute('/guide', { parse: false });
+	const data = (typeof answer.data === 'string' ? JSON.parse(answer.data) : answer.data) as
+		| { responseContext?: { mainAppWebResponseContext?: { datasyncId?: string } } }
+		| undefined;
+
+	// Written "<account>||<delegated account>", where only the first is wanted.
+	const account = data?.responseContext?.mainAppWebResponseContext?.datasyncId?.split('||')[0];
+	if (!account) return undefined;
+
+	return platformMinter()(REQUEST_KEY, account);
 }
 
 /** The pair `vb=1`, as it is encoded inside a format's xtags. */
@@ -130,7 +165,7 @@ export async function getVideoPageYTjs(videoId: string): Promise<VideoPlay> {
 	const clientPlaybackNonce = Utils.generateRandomString(16);
 
 	const watchEndpoint = new YTNodes.NavigationEndpoint({ watchEndpoint: { videoId } });
-	const askForPlayer = (session: Innertube) =>
+	const askForPlayer = (session: Innertube, poToken?: string) =>
 		watchEndpoint.call(session.actions, {
 			contentCheckOk: true,
 			racyCheckOk: true,
@@ -138,7 +173,8 @@ export async function getVideoPageYTjs(videoId: string): Promise<VideoPlay> {
 				contentPlaybackContext: {
 					signatureTimestamp: session.session.player?.signature_timestamp
 				}
-			}
+			},
+			...(poToken ? { serviceIntegrityDimensions: { poToken } } : {})
 		});
 
 	let rawPlayerResponse = await askForPlayer(innertube);
@@ -148,6 +184,7 @@ export async function getVideoPageYTjs(videoId: string): Promise<VideoPlay> {
 	// saved account, which then plays them too: everything else stays anonymous,
 	// so the account is told about no more than it has to be.
 	let signedInTried = false;
+	let poToken: string | undefined;
 
 	if (playabilityStatusOf(rawPlayerResponse) === 'LOGIN_REQUIRED') {
 		const signedIn = await getSignedInInnertube().catch(() => undefined);
@@ -155,7 +192,13 @@ export async function getVideoPageYTjs(videoId: string): Promise<VideoPlay> {
 		if (signedIn) {
 			signedInTried = true;
 			innertube = signedIn;
-			rawPlayerResponse = await askForPlayer(signedIn);
+
+			// Asked for without a token, the account is put through the same "Sign
+			// in to confirm you're not a bot" as nobody at all; YouTube's own page
+			// sends one with the request, and so does the television, and both are
+			// let through. Bound to the account, as playing it needs anyway.
+			poToken = await mintForAccount(signedIn).catch(() => undefined);
+			rawPlayerResponse = await askForPlayer(signedIn, poToken);
 		}
 	}
 
@@ -259,6 +302,7 @@ export async function getVideoPageYTjs(videoId: string): Promise<VideoPlay> {
 		video,
 		clientPlaybackNonce,
 		rawPlayerResponse,
+		poToken,
 		authorThumbnails,
 		descString,
 		recommendedVideos,
@@ -337,26 +381,12 @@ export async function continueVideoPlayerYTjs(videoId: string): Promise<{
 
 	const { innertube, video, clientPlaybackNonce, rawPlayerResponse } = intermediate;
 
-	const requestKey = 'O43z0dpjhgX20SCx4KAo';
-
-	let platformMinter: (requestKey: string, visitorData: string) => Promise<string>;
-
-	switch (Capacitor.getPlatform()) {
-		case 'electron':
-			platformMinter = window.electronAPI.generatePoToken;
-			break;
-		case 'android':
-			platformMinter = androidPoTokenMinter;
-			break;
-		default:
-			platformMinter = webPoTokenMinter;
-			break;
-	}
-
-	// Nothing to play means nothing to ask a token for.
+	// Nothing to play means nothing to ask a token for. One the account's
+	// request already carried is bound to the account, as streaming needs.
 	if (video.streaming_data) {
 		poTokenCacheStore.set(
-			await platformMinter(requestKey, poTokenBinding(innertube, rawPlayerResponse, videoId))
+			intermediate.poToken ??
+				(await platformMinter()(REQUEST_KEY, poTokenBinding(innertube, rawPlayerResponse, videoId)))
 		);
 	}
 
