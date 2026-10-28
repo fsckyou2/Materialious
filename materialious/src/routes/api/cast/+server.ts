@@ -16,7 +16,13 @@ const zCastSchema = z.object({
 	 * A receiver whose stream failed, asking for a new session rather than the
 	 * one it had - which would hand back the same address that just failed.
 	 */
-	fresh: z.boolean().optional()
+	fresh: z.boolean().optional(),
+	/**
+	 * The viewer's own YouTube cookies, as saved under their account, for a
+	 * video YouTube refuses to play anonymously. Used for that one session,
+	 * held in memory while it lasts, and never logged or stored.
+	 */
+	youtubeCookie: z.string().max(4000).optional()
 });
 
 /**
@@ -43,7 +49,8 @@ export async function POST(event) {
 	try {
 		session = await createCastSession(data.data.videoId, locals.userId, {
 			acceptsHls: data.data.formats?.includes('hls') === true,
-			fresh: data.data.fresh === true
+			fresh: data.data.fresh === true,
+			youtubeCookie: data.data.youtubeCookie || undefined
 		});
 	} catch (err) {
 		// Said here as well as to the receiver, which may well not show it.
