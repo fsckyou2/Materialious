@@ -45,9 +45,9 @@ export async function injectSabr(
 	sabrAdapter.onReloadPlayerResponse(async (reloadContext) => {
 		if (!video.ytjs) return;
 
-		// A signed-in session asked without its token is bot-checked like nobody
-		// at all, and the reload comes back with nothing to play.
-		const poToken = video.ytjs.innertube.session.logged_in ? get(poTokenCacheStore) : undefined;
+		// Asked again the way it was asked the first time: the streaming token
+		// is bound to the account, and is not what the player is asked with.
+		const poToken = video.ytjs.playerPoToken;
 
 		const reloadedInfo = await video.ytjs.innertube.actions.execute('/player', {
 			videoId: video.videoId,

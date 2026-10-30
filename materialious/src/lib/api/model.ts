@@ -99,6 +99,8 @@ export interface Ytjs {
 	video: YT.VideoInfo;
 	clientPlaybackNonce: string;
 	rawApiResponse: ApiResponse;
+	/** The token the player was asked with, bound to the video, if any. */
+	playerPoToken?: string;
 }
 
 export type FallbackPatches = 'youtubejs' | 'piped';
