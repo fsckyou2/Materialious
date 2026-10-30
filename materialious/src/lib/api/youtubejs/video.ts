@@ -193,13 +193,18 @@ export async function getVideoPageYTjs(videoId: string): Promise<VideoPlay> {
 			signedInTried = true;
 			innertube = signedIn;
 
-			// Sent with the request as YouTube's own page sends it: bound to the
-			// video, signed in or not. Only the token streaming is done with is
-			// bound to the account. Sending that one here instead let the request
-			// through, and the streaming server then gave up on the session a
-			// minute in with "sabr.malformed_config", and every time after.
-			playerPoToken = await platformMinter()(REQUEST_KEY, videoId).catch(() => undefined);
-			rawPlayerResponse = await askForPlayer(signedIn, playerPoToken);
+			// Asked without a token first. Since one was sent with this request -
+			// bound to the account, then to the video - the streaming server has
+			// refused every request after the first with "sabr.malformed_config",
+			// whatever the streaming token was bound to, and playback stopped
+			// when the first minute ran out. Asked without, it played. Only if
+			// YouTube will not answer that is a token sent after all.
+			rawPlayerResponse = await askForPlayer(signedIn);
+
+			if (playabilityStatusOf(rawPlayerResponse) !== 'OK') {
+				playerPoToken = await platformMinter()(REQUEST_KEY, videoId).catch(() => undefined);
+				if (playerPoToken) rawPlayerResponse = await askForPlayer(signedIn, playerPoToken);
+			}
 		}
 	}
 

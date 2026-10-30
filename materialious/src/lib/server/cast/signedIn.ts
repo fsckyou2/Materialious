@@ -17,13 +17,16 @@ const REQUEST_KEY = 'O43z0dpjhgX20SCx4KAo';
  *
  * Streaming has to be done with a token bound to the account rather than to
  * the video, or the streaming server refuses it, so that one is handed back
- * beside the session; the session itself asks for the video with one bound to
- * the video.
+ * beside the session, which asks for the video without one.
  */
 export async function getSignedInSession(
 	cookie: string,
 	videoId: string
-): Promise<{ innertube: Innertube; streamingPoToken?: string }> {
+): Promise<{
+	innertube: Innertube;
+	withPlayerToken: () => Promise<Innertube>;
+	streamingPoToken?: string;
+}> {
 	// The library sends the cookies only with its API calls, so the session
 	// was set up - its visitor identity, its configuration - anonymously, from
 	// an address YouTube is asking to prove it is not a bot, and every signed-in
@@ -84,17 +87,15 @@ export async function getSignedInSession(
 	// Written "<account>||<delegated account>", where only the first is wanted.
 	const account = context?.datasyncId?.split('||')[0] || videoId;
 
-	// Two tokens, as YouTube's own page uses them: the player is asked with
-	// one bound to the video, signed in or not, and only streaming is done
-	// with one bound to the account. One token bound to the account for both
-	// got the video, and the streaming server then gave up on the session a
-	// minute in with "sabr.malformed_config".
-	let playerPoToken: string | undefined;
+	// Streaming is done with a token bound to the account. The player is
+	// asked without one: sent with that request - bound to the account, then
+	// to the video - the streaming server refused every request after the
+	// first with "sabr.malformed_config", and playback stopped a minute in.
+	// Only a session that asks with a token bound to the video is offered for
+	// the case YouTube will not answer without.
 	let streamingPoToken: string | undefined;
 	try {
-		playerPoToken = await mintPoTokenInJSDOM(REQUEST_KEY, videoId);
-		streamingPoToken =
-			account === videoId ? playerPoToken : await mintPoTokenInJSDOM(REQUEST_KEY, account);
+		streamingPoToken = await mintPoTokenInJSDOM(REQUEST_KEY, account);
 	} catch (error) {
 		console.warn(
 			'cast: could not mint a token for a signed-in session:',
@@ -103,7 +104,8 @@ export async function getSignedInSession(
 	}
 
 	return {
-		innertube: playerPoToken ? await create(playerPoToken) : probe,
+		innertube: probe,
+		withPlayerToken: async () => create(await mintPoTokenInJSDOM(REQUEST_KEY, videoId)),
 		streamingPoToken
 	};
 }

@@ -247,10 +247,16 @@ export class CastSession {
 		if (info.playability_status?.status === 'LOGIN_REQUIRED' && options.youtubeCookie) {
 			try {
 				const signedIn = await getSignedInSession(options.youtubeCookie, videoId);
-				const signedInInfo = await signedIn.innertube.getInfo(videoId);
+				let signedInSession = signedIn.innertube;
+				let signedInInfo = await signedInSession.getInfo(videoId);
+
+				if (!signedInInfo.streaming_data) {
+					signedInSession = await signedIn.withPlayerToken();
+					signedInInfo = await signedInSession.getInfo(videoId);
+				}
 
 				if (signedInInfo.streaming_data) {
-					innertube = signedIn.innertube;
+					innertube = signedInSession;
 					info = signedInInfo;
 					streamingPoToken = signedIn.streamingPoToken;
 				} else {
