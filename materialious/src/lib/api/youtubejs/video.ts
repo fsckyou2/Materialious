@@ -28,8 +28,8 @@ export interface VideoIntermediate {
 	video: YT.VideoInfo;
 	clientPlaybackNonce: string;
 	rawPlayerResponse: import('youtubei.js').ApiResponse;
-	/** The token the signed-in request was made with, if it was. */
-	poToken?: string;
+	/** The token the signed-in request was made with, bound to the video. */
+	playerPoToken?: string;
 	authorThumbnails: Image[];
 	descString: string;
 	recommendedVideos: VideoBase[];
@@ -77,23 +77,17 @@ function platformMinter(): (requestKey: string, visitorData: string) => Promise<
 }
 
 /**
- * A playback token for a signed-in session, bound to its account.
- *
- * Which account that is comes from the guide, which YouTube answers without
- * a bot check: the player's answer names the account too, but asking it
- * without a token is exactly what gets refused.
+ * Which account a signed-in session is, from the guide, which YouTube answers
+ * without a bot check.
  */
-async function mintForAccount(innertube: Innertube): Promise<string | undefined> {
+async function accountOf(innertube: Innertube): Promise<string | undefined> {
 	const answer = await innertube.actions.execute('/guide', { parse: false });
 	const data = (typeof answer.data === 'string' ? JSON.parse(answer.data) : answer.data) as
 		| { responseContext?: { mainAppWebResponseContext?: { datasyncId?: string } } }
 		| undefined;
 
 	// Written "<account>||<delegated account>", where only the first is wanted.
-	const account = data?.responseContext?.mainAppWebResponseContext?.datasyncId?.split('||')[0];
-	if (!account) return undefined;
-
-	return platformMinter()(REQUEST_KEY, account);
+	return data?.responseContext?.mainAppWebResponseContext?.datasyncId?.split('||')[0] || undefined;
 }
 
 /** The pair `vb=1`, as it is encoded inside a format's xtags. */
@@ -184,7 +178,7 @@ export async function getVideoPageYTjs(videoId: string): Promise<VideoPlay> {
 	// saved account, which then plays them too: everything else stays anonymous,
 	// so the account is told about no more than it has to be.
 	let signedInTried = false;
-	let poToken: string | undefined;
+	let playerPoToken: string | undefined;
 
 	if (playabilityStatusOf(rawPlayerResponse) === 'LOGIN_REQUIRED') {
 		const signedIn = await getSignedInInnertube().catch(() => undefined);
@@ -193,12 +187,13 @@ export async function getVideoPageYTjs(videoId: string): Promise<VideoPlay> {
 			signedInTried = true;
 			innertube = signedIn;
 
-			// Asked for without a token, the account is put through the same "Sign
-			// in to confirm you're not a bot" as nobody at all; YouTube's own page
-			// sends one with the request, and so does the television, and both are
-			// let through. Bound to the account, as playing it needs anyway.
-			poToken = await mintForAccount(signedIn).catch(() => undefined);
-			rawPlayerResponse = await askForPlayer(signedIn, poToken);
+			// Sent with the request as YouTube's own page sends it: bound to the
+			// video, signed in or not. Only the token streaming is done with is
+			// bound to the account. Sending that one here instead let the request
+			// through, and the streaming server then gave up on the session a
+			// minute in with "sabr.malformed_config", and every time after.
+			playerPoToken = await platformMinter()(REQUEST_KEY, videoId).catch(() => undefined);
+			rawPlayerResponse = await askForPlayer(signedIn, playerPoToken);
 		}
 	}
 
@@ -302,7 +297,7 @@ export async function getVideoPageYTjs(videoId: string): Promise<VideoPlay> {
 		video,
 		clientPlaybackNonce,
 		rawPlayerResponse,
-		poToken,
+		playerPoToken,
 		authorThumbnails,
 		descString,
 		recommendedVideos,
@@ -381,13 +376,17 @@ export async function continueVideoPlayerYTjs(videoId: string): Promise<{
 
 	const { innertube, video, clientPlaybackNonce, rawPlayerResponse } = intermediate;
 
-	// Nothing to play means nothing to ask a token for. One the account's
-	// request already carried is bound to the account, as streaming needs.
+	// Nothing to play means nothing to ask a token for.
 	if (video.streaming_data) {
-		poTokenCacheStore.set(
-			intermediate.poToken ??
-				(await platformMinter()(REQUEST_KEY, poTokenBinding(innertube, rawPlayerResponse, videoId)))
-		);
+		let binding = poTokenBinding(innertube, rawPlayerResponse, videoId);
+
+		// The player's answer normally names the account; when it does not,
+		// the guide still does.
+		if (innertube.session.logged_in && binding === videoId) {
+			binding = (await accountOf(innertube).catch(() => undefined)) ?? videoId;
+		}
+
+		poTokenCacheStore.set(await platformMinter()(REQUEST_KEY, binding));
 	}
 
 	let dashUri: string | undefined;
@@ -475,7 +474,8 @@ export async function continueVideoPlayerYTjs(videoId: string): Promise<{
 			innertube: innertube,
 			video: video,
 			clientPlaybackNonce: clientPlaybackNonce,
-			rawApiResponse: rawPlayerResponse
+			rawApiResponse: rawPlayerResponse,
+			playerPoToken: intermediate.playerPoToken
 		}
 	};
 }

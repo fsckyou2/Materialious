@@ -209,6 +209,13 @@ export class CastSession {
 	 */
 	private hlsMaster?: { url: string; at: number };
 
+	/**
+	 * What a signed-in session streams with, bound to the account: the
+	 * session's own token is bound to the video, which is what the player is
+	 * asked with and what the streaming server refuses from an account.
+	 */
+	private streamingPoToken?: string;
+
 	/** Playlists YouTube has since replaced, and what replaced them. */
 	private readonly hlsReplaced = new Map<string, string>();
 
@@ -230,6 +237,7 @@ export class CastSession {
 	): Promise<CastSession> {
 		let innertube = await getDownloadSession(videoId);
 		let info = await innertube.getInfo(videoId);
+		let streamingPoToken: string | undefined;
 
 		// Some videos YouTube plays only to somebody signed in - and lately,
 		// from this address, nearly all of them ("Sign in to confirm you're not
@@ -239,11 +247,12 @@ export class CastSession {
 		if (info.playability_status?.status === 'LOGIN_REQUIRED' && options.youtubeCookie) {
 			try {
 				const signedIn = await getSignedInSession(options.youtubeCookie, videoId);
-				const signedInInfo = await signedIn.getInfo(videoId);
+				const signedInInfo = await signedIn.innertube.getInfo(videoId);
 
 				if (signedInInfo.streaming_data) {
-					innertube = signedIn;
+					innertube = signedIn.innertube;
 					info = signedInInfo;
+					streamingPoToken = signedIn.streamingPoToken;
 				} else {
 					console.warn(
 						`cast: ${videoId} was refused to the signed-in account too:`,
@@ -266,6 +275,7 @@ export class CastSession {
 			info,
 			options.acceptsHls === true
 		);
+		session.streamingPoToken = streamingPoToken;
 
 		// A live stream is better served as YouTube's own HLS to a receiver that
 		// can play it. Over SABR every answer carries an order to wait four or
@@ -473,7 +483,9 @@ export class CastSession {
 			}
 		});
 
-		this.sabr.onMintPoToken(async () => this.innertube.session.po_token ?? '');
+		this.sabr.onMintPoToken(
+			async () => this.streamingPoToken ?? this.innertube.session.po_token ?? ''
+		);
 		this.sabr.onReloadPlayerResponse(async (reloadContext) => {
 			await this.reloadPlayerResponse(reloadContext);
 		});
