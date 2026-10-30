@@ -5,6 +5,7 @@ import type {
 	Captions,
 	Image,
 	StoryBoard,
+	StreamingBinding,
 	Thumbnail,
 	VideoBase,
 	VideoPlay
@@ -74,6 +75,11 @@ function platformMinter(): (requestKey: string, visitorData: string) => Promise<
 		default:
 			return webPoTokenMinter;
 	}
+}
+
+/** A playback token, minted by whatever this platform mints with. */
+export function mintPoToken(binding: string): Promise<string> {
+	return platformMinter()(REQUEST_KEY, binding);
 }
 
 /**
@@ -377,16 +383,34 @@ export async function continueVideoPlayerYTjs(videoId: string): Promise<{
 	const { innertube, video, clientPlaybackNonce, rawPlayerResponse } = intermediate;
 
 	// Nothing to play means nothing to ask a token for.
+	const streamingBindings: StreamingBinding[] = [];
+
 	if (video.streaming_data) {
 		let binding = poTokenBinding(innertube, rawPlayerResponse, videoId);
+		let kind: StreamingBinding['kind'] = binding === videoId ? 'video' : 'account';
 
 		// The player's answer normally names the account; when it does not,
 		// the guide still does.
 		if (innertube.session.logged_in && binding === videoId) {
-			binding = (await accountOf(innertube).catch(() => undefined)) ?? videoId;
+			const account = await accountOf(innertube).catch(() => undefined);
+			if (account) {
+				binding = account;
+				kind = 'guide';
+			}
 		}
 
-		poTokenCacheStore.set(await platformMinter()(REQUEST_KEY, binding));
+		streamingBindings.push({ kind, value: binding });
+
+		// What else a signed-in session's streaming token could be bound to,
+		// for the player to fall back on if the streaming server refuses the
+		// first: which one YouTube wants has changed under us more than once.
+		if (innertube.session.logged_in) {
+			const visitorData = innertube.session.context.client.visitorData;
+			if (binding !== videoId) streamingBindings.push({ kind: 'video', value: videoId });
+			if (visitorData) streamingBindings.push({ kind: 'visitor', value: visitorData });
+		}
+
+		poTokenCacheStore.set(await mintPoToken(binding));
 	}
 
 	let dashUri: string | undefined;
@@ -475,7 +499,8 @@ export async function continueVideoPlayerYTjs(videoId: string): Promise<{
 			video: video,
 			clientPlaybackNonce: clientPlaybackNonce,
 			rawApiResponse: rawPlayerResponse,
-			playerPoToken: intermediate.playerPoToken
+			playerPoToken: intermediate.playerPoToken,
+			streamingBindings
 		}
 	};
 }

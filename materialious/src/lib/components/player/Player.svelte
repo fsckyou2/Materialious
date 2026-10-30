@@ -49,7 +49,7 @@
 	} from '$lib/player/index';
 	import { manifestDomainInclusion } from '$lib/player/manifest';
 	import { installDecodingInfoCache } from '$lib/player/mediaCapabilities';
-	import { injectSabr } from '$lib/player/sabr';
+	import { injectSabr, sabrTrace } from '$lib/player/sabr';
 	import type { SabrStreamingAdapter } from 'googlevideo/sabr-streaming-adapter';
 	import { fade } from 'svelte/transition';
 	import { addToast } from '$lib/components/Toast.svelte';
@@ -543,7 +543,8 @@
 					),
 					position: playerElement?.currentTime,
 					browser: navigator.userAgent,
-					data: describeForReport(error?.data)
+					data: describeForReport(error?.data),
+					sabr: sabrTrace()
 				})
 			});
 		});
