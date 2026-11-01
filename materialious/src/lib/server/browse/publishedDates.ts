@@ -14,6 +14,8 @@
  * actually looking at.
  */
 
+import { browserLikeFetch } from '@materialious/shared/identity';
+
 /** Upstream answers in well under a second; a feed should not wait on this. */
 const TIMEOUT_MS = 4_000;
 
@@ -40,7 +42,7 @@ export async function publishedDates(channelId: string): Promise<Map<string, num
 
 	let xml: string;
 	try {
-		const response = await fetch(
+		const response = await browserLikeFetch(
 			`https://www.youtube.com/feeds/videos.xml?channel_id=${encodeURIComponent(channelId)}`,
 			{ signal: AbortSignal.timeout(TIMEOUT_MS) }
 		);

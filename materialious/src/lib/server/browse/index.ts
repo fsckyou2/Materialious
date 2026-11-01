@@ -1605,7 +1605,16 @@ export function keepFeeds(): void {
 
 	loadSavedFeeds();
 
-	setInterval(keepOneFresh, KEEP_FRESH_EVERY_MS).unref?.();
+	// At an uneven pace around KEEP_FRESH_EVERY_MS: a request every fifteen
+	// seconds to the second, for an hour at a time, is a clock and not a person.
+	const keepFreshLater = () => {
+		const delay = KEEP_FRESH_EVERY_MS * (0.5 + Math.random());
+		setTimeout(() => {
+			keepOneFresh();
+			keepFreshLater();
+		}, delay).unref?.();
+	};
+	keepFreshLater();
 	setInterval(() => void saveFeeds(), SAVE_EVERY_MS).unref?.();
 
 	// adapter-node says so before it stops, on the signal a container is

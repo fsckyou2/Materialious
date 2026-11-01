@@ -1,6 +1,11 @@
-import { USER_AGENT } from 'bgutils-js/utils';
-import { Innertube, Platform, UniversalCache } from 'youtubei.js';
+import { Innertube, Platform } from 'youtubei.js';
 import type { Types } from 'youtubei.js';
+import {
+	BROWSER_USER_AGENT,
+	browserLikeFetch,
+	noteEgress,
+	serverSessionCache
+} from '../identity.js';
 import { mintPoTokenInJSDOM } from '../jsdom.js';
 
 const REQUEST_KEY = 'O43z0dpjhgX20SCx4KAo';
@@ -16,10 +21,13 @@ export async function getDownloadSession(videoId: string): Promise<Innertube> {
 		console.warn('Failed to mint PO token for download session:', err);
 	}
 
-	return await Innertube.create({
-		fetch,
-		cache: new UniversalCache(true),
-		user_agent: USER_AGENT,
+	const innertube = await Innertube.create({
+		fetch: browserLikeFetch,
+		cache: serverSessionCache(),
+		user_agent: BROWSER_USER_AGENT,
 		...(poToken ? { po_token: poToken } : {})
 	});
+	noteEgress(innertube);
+
+	return innertube;
 }

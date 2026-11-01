@@ -7,7 +7,11 @@ import tls from 'tls';
 
 import { error } from '@sveltejs/kit';
 import { parse as tldParse } from 'tldts';
-import { USER_AGENT } from 'bgutils-js/utils';
+import {
+	asBrowser,
+	BROWSER_USER_AGENT,
+	isYouTubeOrGoogleHost
+} from '@materialious/shared/identity';
 import sodium from 'libsodium-wrappers-sumo';
 
 /**
@@ -49,7 +53,7 @@ const allowedBaseDomains: string[] = [
 	'ytimg.com',
 	'googlevideo.com',
 	'returnyoutubedislikeapi.com',
-  'ajay.app',
+	'ajay.app',
 	'googleapis.com'
 ];
 
@@ -237,13 +241,10 @@ async function proxyRequest(
 	const youtubeCookie = requestHeaders.get(YOUTUBE_COOKIE_HEADER);
 	requestHeaders.delete(YOUTUBE_COOKIE_HEADER);
 	requestHeaders.set('host', urlToProxyObj.host);
-	requestHeaders.set('origin', urlToProxyObj.origin);
-	requestHeaders.set('user-agent', USER_AGENT);
 
 	// Remove headers that may cause issues or be auto-managed
 	for (const key of [
 		'referer',
-		'x-forwarded-for',
 		'x-requested-with',
 		'sec-ch-ua-mobile',
 		'sec-ch-ua',
@@ -253,6 +254,33 @@ async function proxyRequest(
 		'content-length'
 	]) {
 		requestHeaders.delete(key);
+	}
+
+	// What the reverse proxies in front of this server add about the request:
+	// the client's address, and this instance's own hostname, sent to YouTube
+	// from every address the instance ever went out from.
+	for (const key of [...requestHeaders.keys()]) {
+		if (
+			key.startsWith('x-forwarded-') ||
+			key.startsWith('cf-') ||
+			['forwarded', 'via', 'x-real-ip', 'true-client-ip'].includes(key)
+		) {
+			requestHeaders.delete(key);
+		}
+	}
+
+	if (isYouTubeOrGoogleHost(urlToProxyObj.host)) {
+		// Every browser and television behind this instance reaches YouTube from
+		// the one address; let them all be the same browser, the one the PO
+		// tokens are minted as, on the youtube.com page.
+		asBrowser(requestHeaders);
+		requestHeaders.set(
+			'sec-fetch-site',
+			isYouTubeHost(urlToProxyObj.host) ? 'same-origin' : 'cross-site'
+		);
+	} else {
+		requestHeaders.set('origin', urlToProxyObj.origin);
+		requestHeaders.set('user-agent', BROWSER_USER_AGENT);
 	}
 
 	if (youtubeCookie && isYouTubeHost(urlToProxyObj.host)) {

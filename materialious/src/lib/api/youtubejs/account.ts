@@ -1,7 +1,7 @@
 import { getPublicEnv } from '$lib/misc';
 import { interfaceRegionStore, youtubeCookieStore } from '$lib/store';
 import { Capacitor } from '@capacitor/core';
-import { USER_AGENT } from 'bgutils-js/utils';
+import { BROWSER_USER_AGENT } from '@materialious/shared/identity';
 import { get } from 'svelte/store';
 import Innertube, { UniversalCache, YTNodes } from 'youtubei.js';
 
@@ -135,7 +135,7 @@ function createSignedIn(cookie: string): Promise<Innertube> {
 		cache: new UniversalCache(false),
 		enable_session_cache: false,
 		location: get(interfaceRegionStore),
-		user_agent: USER_AGENT,
+		user_agent: BROWSER_USER_AGENT,
 		player_id: getPublicEnv('PLAYER_ID')
 	});
 }

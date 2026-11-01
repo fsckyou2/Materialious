@@ -1,8 +1,9 @@
 import { BotGuardClient } from 'bgutils-js/botguard';
 import { WebPoMinter } from 'bgutils-js/webpo';
-import { buildURL, getHeaders, parseLooseJSON, USER_AGENT } from 'bgutils-js/utils';
+import { buildURL, getHeaders, parseLooseJSON } from 'bgutils-js/utils';
 import type { WebPoSignalOutput } from 'bgutils-js/shared-types';
 import type { IRawResponse } from 'youtubei.js';
+import { browserLikeFetch } from './identity.js';
 
 export interface InnerTubeChallenge {
 	ytConfig: string;
@@ -19,11 +20,9 @@ export async function fetchInnerTubeChallenge(): Promise<InnerTubeChallenge> {
 		return cachedChallenge.challenge;
 	}
 
-	const pageResponse = await fetch('https://www.youtube.com', {
+	const pageResponse = await browserLikeFetch('https://www.youtube.com/', {
 		headers: {
-			accept: '*/*',
-			'accept-language': 'en-US,en;q=0.7',
-			'user-agent': USER_AGENT
+			accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
 		}
 	});
 
@@ -54,7 +53,7 @@ export async function fetchInnerTubeChallenge(): Promise<InnerTubeChallenge> {
 		challengeResponse.bgChallenge.interpreterUrl
 			.privateDoNotAccessOrElseTrustedResourceUrlWrappedValue;
 
-	const bgScriptResponse = await fetch(`https:${interpreterUrl}`);
+	const bgScriptResponse = await browserLikeFetch(`https:${interpreterUrl}`);
 
 	if (!bgScriptResponse.ok) {
 		throw new Error('Unable to fetch interpreter');
@@ -90,7 +89,7 @@ export async function mintPoToken(
 	const webPoSignalOutput: WebPoSignalOutput = [];
 	const botguardResponse = await botGuardClient.snapshot({ webPoSignalOutput });
 
-	const integrityTokenResponse = await fetch(buildURL('GenerateIT', true), {
+	const integrityTokenResponse = await browserLikeFetch(buildURL('GenerateIT', true), {
 		method: 'POST',
 		headers: getHeaders(),
 		body: JSON.stringify([requestKey, botguardResponse])
