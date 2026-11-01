@@ -1,3 +1,4 @@
+import { currentEgress } from '@materialious/shared/identity';
 import { json } from '@sveltejs/kit';
 
 /**
@@ -17,7 +18,13 @@ export async function POST({ request, locals }) {
 		return json({ message: 'Expected JSON' }, { status: 400 });
 	}
 
-	console.warn('[stall]', JSON.stringify(body).slice(0, 2000));
+	// Where YouTube last saw the server, so a refusal can be put down to an
+	// address.
+	console.warn(
+		'[stall]',
+		`egress=${currentEgress() ?? 'unknown'}`,
+		JSON.stringify(body).slice(0, 2000)
+	);
 
 	return json({ ok: true });
 }

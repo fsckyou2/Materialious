@@ -1,5 +1,6 @@
 import { JSDOM } from 'jsdom';
 
+import { BROWSER_USER_AGENT } from './identity.js';
 import { fetchInnerTubeChallenge, mintPoToken } from './poToken.js';
 
 /**
@@ -55,7 +56,9 @@ async function mint(requestKey: string, visitorData: string): Promise<string> {
 		'<!DOCTYPE html><html lang="en"><head><title>YouTube</title></head><body></body></html>',
 		{
 			url: youtubeUrl,
-			referrer: youtubeUrl
+			referrer: youtubeUrl,
+			// The browser every request to YouTube says it comes from.
+			resources: { userAgent: BROWSER_USER_AGENT }
 		}
 	);
 
@@ -65,6 +68,10 @@ async function mint(requestKey: string, visitorData: string): Promise<string> {
 	// the challenge picks, so that one has to be given back as well.
 	const globalName = challengeResponse.bgChallenge?.globalName;
 	const saved = borrow(globalName ? [...BORROWED, globalName] : BORROWED);
+	// Node has a navigator of its own since v21, a getter on the global object
+	// that says "Node.js/24". BotGuard was being told that, while every request
+	// beside it claimed a browser; it is swapped for the window's, and back.
+	const nodeNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
 
 	try {
 		Object.assign(globalThis, {
@@ -74,9 +81,11 @@ async function mint(requestKey: string, visitorData: string): Promise<string> {
 			origin: dom.window.origin
 		});
 
-		if (!Reflect.has(globalThis, 'navigator')) {
-			Object.defineProperty(globalThis, 'navigator', { value: dom.window.navigator });
-		}
+		Object.defineProperty(globalThis, 'navigator', {
+			value: dom.window.navigator,
+			configurable: true,
+			writable: true
+		});
 
 		dom.window.yt = { config_: JSON.parse(ytConfig) };
 		Object.assign(globalThis, { yt: dom.window.yt });
@@ -86,6 +95,15 @@ async function mint(requestKey: string, visitorData: string): Promise<string> {
 		return await mintPoToken(requestKey, visitorData, challengeResponse);
 	} finally {
 		giveBack(saved);
+		try {
+			if (nodeNavigator) {
+				Object.defineProperty(globalThis, 'navigator', nodeNavigator);
+			} else {
+				delete (globalThis as Record<string, unknown>).navigator;
+			}
+		} catch {
+			// A navigator someone else pinned down. Nothing useful to do about it.
+		}
 		dom.window.close();
 	}
 }

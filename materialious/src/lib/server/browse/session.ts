@@ -1,5 +1,10 @@
-import { USER_AGENT } from 'bgutils-js/utils';
-import { Innertube, Platform, UniversalCache } from 'youtubei.js';
+import {
+	BROWSER_USER_AGENT,
+	browserLikeFetch,
+	noteEgress,
+	serverSessionCache
+} from '@materialious/shared/identity';
+import { Innertube, Platform } from 'youtubei.js';
 import type { Types } from 'youtubei.js';
 
 Platform.shim.eval = async (data: Types.BuildScriptResult) => new Function(data.output)();
@@ -25,10 +30,11 @@ export async function getBrowseSession(): Promise<Innertube> {
 
 	pending = (async () => {
 		const innertube = await Innertube.create({
-			fetch,
-			cache: new UniversalCache(true, undefined),
-			user_agent: USER_AGENT
+			fetch: browserLikeFetch,
+			cache: serverSessionCache(),
+			user_agent: BROWSER_USER_AGENT
 		});
+		noteEgress(innertube);
 
 		cached = { innertube, createdAt: Date.now() };
 		pending = undefined;

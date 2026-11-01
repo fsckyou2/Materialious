@@ -1,5 +1,5 @@
 import { mintPoTokenInJSDOM } from '@materialious/shared/jsdom';
-import { USER_AGENT } from 'bgutils-js/utils';
+import { BROWSER_USER_AGENT, browserLikeFetch } from '@materialious/shared/identity';
 import { Innertube, UniversalCache } from 'youtubei.js';
 
 /** The same request key the anonymous download session mints with. */
@@ -37,14 +37,15 @@ export async function getSignedInSession(
 	const signedInFetch: typeof fetch = (input, init) => {
 		const url = new URL(input instanceof Request ? input.url : input.toString());
 		const host = url.hostname.toLowerCase();
-		if (host !== 'youtube.com' && !host.endsWith('.youtube.com')) return fetch(input, init);
+		if (host !== 'youtube.com' && !host.endsWith('.youtube.com'))
+			return browserLikeFetch(input, init);
 
 		const headers = new Headers(
 			init?.headers ?? (input instanceof Request ? input.headers : undefined)
 		);
 		headers.set('cookie', cookie);
 
-		return fetch(input, { ...init, headers });
+		return browserLikeFetch(input, { ...init, headers });
 	};
 
 	const create = (poToken?: string) =>
@@ -55,7 +56,7 @@ export async function getSignedInSession(
 			// as part of an account's identity, nor the other way about.
 			cache: new UniversalCache(false),
 			enable_session_cache: false,
-			user_agent: USER_AGENT,
+			user_agent: BROWSER_USER_AGENT,
 			...(poToken ? { po_token: poToken } : {})
 		});
 

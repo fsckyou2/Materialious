@@ -1,6 +1,6 @@
 import { getPublicEnv } from '$lib/misc';
 import { interfaceRegionStore } from '$lib/store';
-import { USER_AGENT } from 'bgutils-js/utils';
+import { BROWSER_USER_AGENT } from '@materialious/shared/identity';
 import { get } from 'svelte/store';
 import Innertube, { UniversalCache } from 'youtubei.js';
 
@@ -51,7 +51,7 @@ export async function getInnertube(): Promise<Innertube> {
 			fetch: fetch,
 			cache: await freshCache(),
 			location: get(interfaceRegionStore),
-			user_agent: USER_AGENT,
+			user_agent: BROWSER_USER_AGENT,
 			player_id: getPublicEnv('PLAYER_ID')
 		}))().catch((error) => {
 		// A session that failed to build should not be handed to everyone after.

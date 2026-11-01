@@ -13,7 +13,8 @@ import { convertToSeconds } from '$lib/time';
 import { Capacitor } from '@capacitor/core';
 import type { Types } from 'youtubei.js';
 import { Innertube, Utils, YT, YTNodes, Platform } from 'youtubei.js';
-import { getInnertube } from '.';
+import { getInnertube, startNewInnertubeSession } from '.';
+import { sameNetwork } from '@materialious/shared/identity';
 import { getSignedInInnertube } from './account';
 import { isUnrestrictedPlatform } from '$lib/misc';
 import { webPoTokenMinter } from '$lib/web/youtube/minter';
@@ -461,7 +462,40 @@ export async function continueVideoPlayerYTjs(videoId: string): Promise<{
 	};
 }
 
+/**
+ * Whether the session a video was asked for with was made while the instance
+ * went out from another address than the one the video was handed to.
+ *
+ * A session names the address it was made from in every request it makes, and
+ * keeps doing so for a day; the instance has moved addresses more than once to
+ * get away from a bot flag, and a session that went on naming the flagged
+ * address from the new one took the flag with it. The stream's own link says
+ * where YouTube sees the instance now.
+ */
+function sessionFromAnotherAddress(video: VideoPlay): boolean {
+	const madeAt = video.ytjs?.innertube.session.context.client.remoteHost;
+	const streamUrl = video.ytjs?.video.streaming_data?.server_abr_streaming_url;
+	if (!madeAt || !streamUrl) return false;
+
+	let now: string | null;
+	try {
+		now = new URL(streamUrl).searchParams.get('ip');
+	} catch {
+		return false;
+	}
+
+	return !!now && !sameNetwork(madeAt, now);
+}
+
 export async function getVideoYTjs(videoId: string): Promise<VideoPlay> {
+	const video = await loadVideoYTjs(videoId);
+	if (!sessionFromAnotherAddress(video)) return video;
+
+	await startNewInnertubeSession();
+	return await loadVideoYTjs(videoId);
+}
+
+async function loadVideoYTjs(videoId: string): Promise<VideoPlay> {
 	const pageVideo = await getVideoPageYTjs(videoId);
 	const playerData = await continueVideoPlayerYTjs(videoId);
 
