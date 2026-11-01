@@ -16,7 +16,10 @@ let innertubeReady: Promise<Innertube> | undefined;
  * version besides.
  */
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-const SESSION_STARTED_KEY = 'innertubeSessionStartedAt';
+// Renamed whenever every browser's session should go at once: a visitor made
+// from an address YouTube had bot-flagged stayed refused after the instance
+// moved to another one (2026-11-01, to WARP).
+const SESSION_STARTED_KEY = 'innertubeSessionStartedAt.2';
 
 async function freshCache(): Promise<UniversalCache> {
 	const cache = new UniversalCache(true);
