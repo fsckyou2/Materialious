@@ -12,6 +12,7 @@ import { LiveMetadata } from 'googlevideo/protos';
 import type { CacheManager, RequestMetadataManager } from 'googlevideo/utils';
 import type { SabrFormat } from 'googlevideo/shared-types';
 import { getDownloadSession } from '@materialious/shared/download';
+import { currentEgress } from '@materialious/shared/identity';
 import { getSignedInSession } from './signedIn';
 import { parseSegmentIndex, type SegmentIndexEntry } from './sidx';
 import { parseWebmIndex } from './webm';
@@ -41,6 +42,18 @@ const HLS_REFRESH_MIN_MS = 30_000;
 
 /** How many requests to YouTube in a row may fail before a session is given up on. */
 const BROKEN_AFTER_FAILURES = 2;
+
+/**
+ * How many times a session starts over with YouTube after a refusal: twice,
+ * as the browser's player does, since a third has never done better.
+ */
+const MAX_RESTARTS = 2;
+
+/**
+ * An answer from YouTube with no media in it: what a refused stream gets once
+ * its first minute is used up, and what a session starts over on.
+ */
+class NoMediaDataError extends Error {}
 
 /** One entry of the player response's adaptive formats. */
 type RawFormat = NonNullable<YT.VideoInfo['streaming_data']>['adaptive_formats'][number];
@@ -216,6 +229,9 @@ export class CastSession {
 	 */
 	private streamingPoToken?: string;
 
+	/** The viewer's cookie, for starting a signed-in session over. */
+	private youtubeCookie?: string;
+
 	/** Playlists YouTube has since replaced, and what replaced them. */
 	private readonly hlsReplaced = new Map<string, string>();
 
@@ -235,6 +251,57 @@ export class CastSession {
 		userId: string | undefined,
 		options: { acceptsHls?: boolean; youtubeCookie?: string } = {}
 	): Promise<CastSession> {
+		const { innertube, info, streamingPoToken } = await CastSession.fetchVideo(
+			videoId,
+			options.youtubeCookie
+		);
+
+		const session = new CastSession(
+			id,
+			videoId,
+			userId,
+			innertube,
+			info,
+			options.acceptsHls === true
+		);
+		session.streamingPoToken = streamingPoToken;
+		session.youtubeCookie = options.youtubeCookie;
+
+		// A live stream is better served as YouTube's own HLS to a receiver that
+		// can play it. Over SABR every answer carries an order to wait four or
+		// five seconds before the next request, and that wait holds up every
+		// request of the session: audio and video take turns, so each got a new
+		// segment about every ten seconds, against segments two seconds long.
+		// Playback ran dry within a minute and stopped, over and over. HLS has
+		// no such wait - it is what YouTube's own apps play live from.
+		if (session.acceptsHls && info.basic_info.is_live) {
+			try {
+				session.hlsMaster = { url: await session.fetchHlsMaster(), at: Date.now() };
+			} catch (error) {
+				console.warn(
+					`cast: no HLS for live ${videoId}, serving DASH instead:`,
+					error instanceof Error ? error.message : error
+				);
+			}
+		}
+
+		if (!session.hlsMaster) await session.attachSabr();
+
+		return session;
+	}
+
+	/**
+	 * A new YouTube session, player response and token for a video: anonymous,
+	 * or as the viewer where YouTube will play it only to somebody signed in.
+	 */
+	private static async fetchVideo(
+		videoId: string,
+		youtubeCookie: string | undefined
+	): Promise<{
+		innertube: Innertube;
+		info: YT.VideoInfo | Mixins.MediaInfo;
+		streamingPoToken?: string;
+	}> {
 		let innertube = await getDownloadSession(videoId);
 		let info = await innertube.getInfo(videoId);
 		let streamingPoToken: string | undefined;
@@ -244,13 +311,13 @@ export class CastSession {
 		// a bot"). Those, and only those, are asked for again as the viewer's
 		// own account where the receiver brought its cookies, as the website
 		// does: everything else stays anonymous.
-		if (info.playability_status?.status === 'LOGIN_REQUIRED' && options.youtubeCookie) {
+		if (info.playability_status?.status === 'LOGIN_REQUIRED' && youtubeCookie) {
 			try {
 				// The anonymous session's token is bound to the same video, and
 				// is what the signed-in one streams with: minting another would
 				// only cost a second BotGuard run behind every other mint.
 				const signedIn = await getSignedInSession(
-					options.youtubeCookie,
+					youtubeCookie,
 					videoId,
 					innertube.session.po_token
 				);
@@ -280,37 +347,7 @@ export class CastSession {
 			}
 		}
 
-		const session = new CastSession(
-			id,
-			videoId,
-			userId,
-			innertube,
-			info,
-			options.acceptsHls === true
-		);
-		session.streamingPoToken = streamingPoToken;
-
-		// A live stream is better served as YouTube's own HLS to a receiver that
-		// can play it. Over SABR every answer carries an order to wait four or
-		// five seconds before the next request, and that wait holds up every
-		// request of the session: audio and video take turns, so each got a new
-		// segment about every ten seconds, against segments two seconds long.
-		// Playback ran dry within a minute and stopped, over and over. HLS has
-		// no such wait - it is what YouTube's own apps play live from.
-		if (session.acceptsHls && info.basic_info.is_live) {
-			try {
-				session.hlsMaster = { url: await session.fetchHlsMaster(), at: Date.now() };
-			} catch (error) {
-				console.warn(
-					`cast: no HLS for live ${videoId}, serving DASH instead:`,
-					error instanceof Error ? error.message : error
-				);
-			}
-		}
-
-		if (!session.hlsMaster) await session.attachSabr();
-
-		return session;
+		return { innertube, info, streamingPoToken };
 	}
 
 	/** What this session serves a receiver. */
@@ -622,6 +659,8 @@ export class CastSession {
 		/** Live probes ask past the edge, where an empty answer is the answer. */
 		allowEmpty?: boolean;
 	}): Promise<{ data: Uint8Array; sequenceNumber: number | null; live?: LiveMetadata }> {
+		const generation = this.generation;
+
 		try {
 			const answer = await this.takeTurn(() => this.performSabrRequest(options));
 			this.failuresInARow = 0;
@@ -637,9 +676,102 @@ export class CastSession {
 				error instanceof Error ? error.message : error
 			);
 
+			// Asked again with the same token, a refused stream is refused again:
+			// the receiver's retries used to carry it on for over a minute, until
+			// the television gave up and asked for the video anew.
+			if (error instanceof NoMediaDataError && (await this.startOver(generation))) {
+				return this.sabrRequestWithHeader(options);
+			}
+
 			throw error;
 		}
 	}
+
+	/** Which of the session's starts with YouTube is the current one. */
+	private generation = 0;
+	private restarts = 0;
+	private restarting?: Promise<boolean>;
+
+	/**
+	 * Starts the session over with YouTube after a refusal - a new session,
+	 * player response and token, as the 18:05 recovery of 2026-11-01 did only
+	 * once the television asked again, 70 seconds in - and says whether there
+	 * is a new start to try. The receiver's byte ranges stay good: the video
+	 * and its formats are the same.
+	 *
+	 * Asked about a start that has since been replaced, the answer is simply
+	 * yes, so requests that failed together start over once.
+	 */
+	private startOver(failedGeneration: number): Promise<boolean> {
+		if (failedGeneration !== this.generation) return Promise.resolve(true);
+		if (this.restarting) return this.restarting;
+		if (this.restarts >= MAX_RESTARTS || this.hlsMaster) return Promise.resolve(false);
+
+		this.restarts += 1;
+		const attempt = this.restarts;
+
+		this.restarting = this.takeTurn(async () => {
+			const { innertube, info, streamingPoToken } = await CastSession.fetchVideo(
+				this.videoId,
+				this.youtubeCookie
+			);
+
+			if (!info.streaming_data) {
+				const playability = info.playability_status;
+				throw new Error(playability?.reason || playability?.status || 'No streaming data');
+			}
+
+			this.sabr?.dispose();
+			this.innertube = innertube;
+			this.info = info;
+			this.streamingPoToken = streamingPoToken;
+			this.protectionStatus = undefined;
+			await this.attachSabr();
+
+			// The formats answering for the receiver's ranges are the new start's.
+			for (const [key, state] of this.formatStates) {
+				const format = this.formats.find(
+					(candidate) => FormatKeyUtils.fromFormat(candidate) === key
+				);
+				if (format) state.format = format;
+			}
+
+			this.generation += 1;
+			this.failuresInARow = 0;
+		})
+			.then(
+				() => {
+					console.info(
+						`cast: ${this.videoId} started over with YouTube (${attempt} of ${MAX_RESTARTS})`
+					);
+					return true;
+				},
+				(error) => {
+					console.warn(
+						`cast: ${this.videoId} could not start over with YouTube:`,
+						error instanceof Error ? error.message : error
+					);
+					return false;
+				}
+			)
+			.finally(() => {
+				this.restarting = undefined;
+			});
+
+		return this.restarting;
+	}
+
+	/**
+	 * Whether this session has nothing left to try: refused, and started over
+	 * as often as it will be. Asking YouTube again would only be refused again,
+	 * from the same address, as many times as the receiver retries.
+	 */
+	get exhausted(): boolean {
+		return this.broken && this.restarts >= MAX_RESTARTS && !this.restarting;
+	}
+
+	/** What YouTube last said of the stream's token: 1 is good, 2 or more refused. */
+	private protectionStatus?: number;
 
 	/** How many requests to YouTube have failed since the last that worked. */
 	private failuresInARow = 0;
@@ -697,6 +829,12 @@ export class CastSession {
 			body: request.body as BodyInit
 		});
 
+		// An error page is not media, and would otherwise be served as some.
+		if (!response.ok) {
+			await response.body?.cancel().catch(() => {});
+			throw new Error(`YouTube answered ${response.status} to a SABR request`);
+		}
+
 		const metadata = this.adapter.requestMetadataManager?.getRequestMetadata(request.url);
 		let data: Uint8Array | undefined;
 
@@ -753,8 +891,30 @@ export class CastSession {
 
 		const resolved = (handled?.data as Uint8Array | undefined) ?? data;
 
+		// A refused token is told so from its first answer, and still sent about
+		// a minute of video before nothing more comes: starting over now, while
+		// the receiver has that minute to play, is not something anybody sees.
+		const protection = metadata?.streamInfo?.streamProtectionStatus?.status;
+		if (protection !== undefined && protection !== this.protectionStatus) {
+			this.protectionStatus = protection;
+
+			if (protection >= 2) {
+				console.warn(
+					`cast: ${this.videoId} refused by YouTube (stream protection status ${protection},` +
+						` seen at ${currentEgress() ?? 'an unknown address'})`
+				);
+				void this.startOver(this.generation);
+			}
+		}
+
 		if (!resolved && !options.allowEmpty) {
-			throw new Error('SABR request produced no media data');
+			const sabrError = metadata?.error?.sabrError;
+			throw new NoMediaDataError(
+				'SABR request produced no media data' +
+					` (stream protection status ${protection ?? 'not given'}` +
+					(sabrError ? `, SABR error ${sabrError.type ?? '?'} ${sabrError.code ?? ''}` : '') +
+					')'
+			);
 		}
 
 		const sequence = metadata?.streamInfo?.mediaHeader?.sequenceNumber;

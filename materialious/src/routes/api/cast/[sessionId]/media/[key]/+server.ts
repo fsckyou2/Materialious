@@ -19,6 +19,12 @@ export async function GET({ params, request }) {
 	// SvelteKit has already decoded the route parameter.
 	const key = params.key;
 
+	// Refused, and started over as often as it will be: say so, rather than
+	// take every retry of the receiver's back to YouTube to be refused again.
+	if (session.exhausted) {
+		throw error(503, 'YouTube refused this stream');
+	}
+
 	let total: number;
 	let mimeType: string;
 	try {
@@ -50,10 +56,26 @@ export async function GET({ params, request }) {
 
 	const bytes = session.readRange(key, start, end, () => request.signal.aborted);
 
+	// The first piece is fetched before anything is promised. A range that
+	// fails once its 206 has gone out reaches the receiver only as a body cut
+	// short, which it takes for the network and quietly asks again.
+	let first: IteratorResult<Uint8Array> | undefined;
+	try {
+		first = await bytes.next();
+	} catch (err) {
+		console.warn(
+			`cast: ${session.videoId} ${key} bytes ${start}-${end} failed:`,
+			err instanceof Error ? err.message : err
+		);
+		throw error(503, err instanceof Error ? err.message : 'YouTube refused this stream');
+	}
+
 	const stream = new ReadableStream<Uint8Array>({
 		async pull(controller) {
 			try {
-				const { value, done } = await bytes.next();
+				const next = first ?? (await bytes.next());
+				first = undefined;
+				const { value, done } = next;
 				if (done) {
 					controller.close();
 					return;
