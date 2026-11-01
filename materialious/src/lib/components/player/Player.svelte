@@ -40,6 +40,7 @@
 	} from '$lib/store';
 	import { setStatusBarColor } from '$lib/theme';
 	import { getVideoYTjs } from '$lib/api/youtubejs/video';
+	import { startNewInnertubeSession } from '$lib/api/youtubejs';
 	import {
 		goToNextVideo,
 		goToPreviousVideo,
@@ -262,7 +263,7 @@
 		playerIsInWindowFullscreen.update((v) => !v);
 	}
 
-	async function loadVideo() {
+	async function loadVideo(startAt?: number) {
 		showVideoRetry = false;
 
 		sabrAdapter = await injectSabr(data.video, player);
@@ -342,9 +343,9 @@
 				!data.video.fallbackPatch
 			) {
 				const manifest = await manifestDomainInclusion(dashUrl);
-				await player.load(manifest, await getPlaybackHistory());
+				await player.load(manifest, startAt ?? (await getPlaybackHistory()));
 			} else {
-				await player.load(dashUrl, await getPlaybackHistory());
+				await player.load(dashUrl, startAt ?? (await getPlaybackHistory()));
 			}
 
 			if (data.content.timestamps) {
@@ -377,7 +378,57 @@
 	async function reloadVideo() {
 		showVideoRetry = false;
 		data.video = await getVideoYTjs(data.video.videoId);
+		sabrAdapter?.dispose();
 		await loadVideo();
+	}
+
+	/**
+	 * Whether YouTube refused the stream's token. It still sends about a minute
+	 * of video after first refusing, then nothing, so this shows up as the
+	 * stall at one minute that no amount of retrying gets past.
+	 */
+	function streamRefused(error: shaka.util.Error | undefined): boolean {
+		const details: unknown[] = Array.isArray(error?.data) ? error.data : [];
+		return details.some(
+			(detail) =>
+				((detail as any)?.info?.streamInfo?.streamProtectionStatus?.status ?? 0) >= 2
+		);
+	}
+
+	/** The video started over after a refusal, and how many times. */
+	let recoveredVideo = '';
+	let recoveries = 0;
+	let recovering = false;
+
+	/**
+	 * Starts the video over where it got to, with a new session, player response
+	 * and token. The same video from the same address plays with a fresh
+	 * session as often as not, so a refusal is worth a second try; two, since a
+	 * third has never done better than the second.
+	 */
+	async function recoverFromRefusal() {
+		if (recovering || !data.video.ytjs) return;
+
+		if (recoveredVideo !== data.video.videoId) {
+			recoveredVideo = data.video.videoId;
+			recoveries = 0;
+		}
+		if (recoveries >= 2) return;
+
+		recovering = true;
+		recoveries++;
+		const at = playerElement?.currentTime ?? 0;
+
+		try {
+			await startNewInnertubeSession();
+			data.video = await getVideoYTjs(data.video.videoId);
+			sabrAdapter?.dispose();
+			await loadVideo(at);
+		} catch (error) {
+			console.warn('Could not start the video over after YouTube refused it:', error);
+		} finally {
+			recovering = false;
+		}
 	}
 
 	function toggleVideoPlaybackStatus() {
@@ -544,9 +595,12 @@
 					position: playerElement?.currentTime,
 					browser: navigator.userAgent,
 					data: describeForReport(error?.data),
-					sabr: sabrTrace()
+					sabr: sabrTrace(),
+					recoveries
 				})
 			});
+
+			if (streamRefused(error)) void recoverFromRefusal();
 		});
 
 		playerElement?.addEventListener('volumechange', saveVolumePreference);
