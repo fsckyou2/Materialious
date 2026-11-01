@@ -89,7 +89,11 @@ export async function mintPoToken(
 	const webPoSignalOutput: WebPoSignalOutput = [];
 	const botguardResponse = await botGuardClient.snapshot({ webPoSignalOutput });
 
-	const integrityTokenResponse = await browserLikeFetch(buildURL('GenerateIT', true), {
+	// Plain, with bgutils-js's own headers, unlike everything else sent to
+	// YouTube. Sent as Chrome on the youtube.com page, the snapshot JSDOM took
+	// is judged as Chrome's, fails, and every stream played with the token is
+	// refused (STREAM_PROTECTION_STATUS 2) after its first minute (2026-11-01).
+	const integrityTokenResponse = await fetch(buildURL('GenerateIT', true), {
 		method: 'POST',
 		headers: getHeaders(),
 		body: JSON.stringify([requestKey, botguardResponse])
