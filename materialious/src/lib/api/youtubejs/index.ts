@@ -61,3 +61,19 @@ export async function getInnertube(): Promise<Innertube> {
 
 	return innertubeReady;
 }
+
+/**
+ * Drops the session this browser has been using, so the next request starts
+ * another. For a stream YouTube refused: a refusal that a fresh session from
+ * the same place does not get has so far always been the session's fault.
+ */
+export async function startNewInnertubeSession(): Promise<void> {
+	innertubeReady = undefined;
+
+	try {
+		await new UniversalCache(true).remove('innertube_session_data');
+		localStorage.setItem(SESSION_STARTED_KEY, String(Date.now()));
+	} catch {
+		// Without storage there was no lasting session to drop.
+	}
+}
