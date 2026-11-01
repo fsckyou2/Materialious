@@ -6,6 +6,12 @@ import { unsign } from 'cookie-signature';
 import { env } from '$env/dynamic/private';
 import { RateLimiter } from 'sveltekit-rate-limiter/server';
 import sodium from 'libsodium-wrappers-sumo';
+import { EnvHttpProxyAgent, setGlobalDispatcher } from 'undici';
+import { MAX_HEADER_SIZE } from '$lib/server/http';
+
+// Every fetch the server makes, through HTTPS_PROXY when one is set as before,
+// but able to read YouTube's answers to a browser: see MAX_HEADER_SIZE.
+setGlobalDispatcher(new EnvHttpProxyAgent({ maxHeaderSize: MAX_HEADER_SIZE }));
 
 let captchaKey = '';
 let captchaSignature = '';

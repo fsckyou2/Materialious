@@ -2,6 +2,7 @@ import { BASE64_BODY_HEADER, isOwnBackend } from '$lib/shared';
 import { env } from '$env/dynamic/public';
 import { env as privateEnv } from '$env/dynamic/private';
 import { EnvHttpProxyAgent } from 'undici';
+import { MAX_HEADER_SIZE } from '$lib/server/http';
 import fs from 'fs';
 import tls from 'tls';
 
@@ -116,7 +117,8 @@ const agentOptions = {
 	// replies that were arriving perfectly well.
 	connectTimeout: CONNECT_TIMEOUT_MS,
 	headersTimeout: HEADERS_TIMEOUT_MS,
-	bodyTimeout: BODY_TIMEOUT_MS
+	bodyTimeout: BODY_TIMEOUT_MS,
+	maxHeaderSize: MAX_HEADER_SIZE
 };
 
 if (certPath && fs.existsSync(certPath)) {
