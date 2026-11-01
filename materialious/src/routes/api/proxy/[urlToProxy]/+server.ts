@@ -1,7 +1,7 @@
 import { BASE64_BODY_HEADER, isOwnBackend } from '$lib/shared';
 import { env } from '$env/dynamic/public';
 import { env as privateEnv } from '$env/dynamic/private';
-import { Agent } from 'undici';
+import { EnvHttpProxyAgent } from 'undici';
 import fs from 'fs';
 import tls from 'tls';
 
@@ -99,7 +99,11 @@ const BODY_TIMEOUT_MS = 60_000;
  */
 const OVERALL_TIMEOUT_MS = 300_000;
 
-let dispatcher: Agent;
+// EnvHttpProxyAgent goes out through HTTPS_PROXY / HTTP_PROXY when they are
+// set (minus NO_PROXY), and straight out like a plain Agent when not. Without
+// it this route ignores the proxy the rest of the server uses, and YouTube sees
+// the player request and the stream it hands out come from different places.
+let dispatcher: EnvHttpProxyAgent;
 
 const certPath = privateEnv.PROXY_TRUST_CA;
 const agentOptions = {
@@ -112,12 +116,10 @@ const agentOptions = {
 };
 
 if (certPath && fs.existsSync(certPath)) {
-	dispatcher = new Agent({
-		...agentOptions,
-		connect: { ca: [fs.readFileSync(certPath), ...tls.rootCertificates] }
-	});
+	const ca = [fs.readFileSync(certPath), ...tls.rootCertificates];
+	dispatcher = new EnvHttpProxyAgent({ ...agentOptions, connect: { ca }, requestTls: { ca } });
 } else {
-	dispatcher = new Agent(agentOptions);
+	dispatcher = new EnvHttpProxyAgent(agentOptions);
 }
 
 /** Undici reports the reason for a failed fetch as the cause of a plain error. */

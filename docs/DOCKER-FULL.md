@@ -81,6 +81,14 @@ services:
       # Specify a path to a certificate to trust, useful when using self-signed certificates.
       PROXY_TRUST_CA: ""
 
+      # Send the server's requests to YouTube out through another address, for
+      # when YouTube bot-checks yours ("Sign in to confirm you're not a bot", or
+      # videos that stop after a minute). e.g. a Cloudflare WARP container:
+      # NODE_USE_ENV_PROXY: "1"
+      # HTTPS_PROXY: "http://warp:1080"
+      # HTTP_PROXY: "http://warp:1080"
+      # NO_PROXY: "localhost,127.0.0.1"
+
       # Allow any domain in proxy
       # This shouldn't be used unless you KNOW what your doing
       # requires PUBLIC_REGISTRATION_ALLOWED to be false
