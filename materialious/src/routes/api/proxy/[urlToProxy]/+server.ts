@@ -3,6 +3,7 @@ import { env } from '$env/dynamic/public';
 import { env as privateEnv } from '$env/dynamic/private';
 import { EnvHttpProxyAgent } from 'undici';
 import { MAX_HEADER_SIZE } from '$lib/server/http';
+import { isBotCheck, noteBotCheck } from '$lib/server/botCheck';
 import fs from 'fs';
 import tls from 'tls';
 
@@ -358,6 +359,24 @@ async function proxyRequest(
 
 	if (!response || errorMsg) {
 		throw error(500, errorMsg);
+	}
+
+	// Every browser's player asks YouTube for its videos through here, so this
+	// is where a bot-flagged address shows first. Read from a copy, beside the
+	// browser rather than in its way.
+	if (
+		response.ok &&
+		isYouTubeHost(urlToProxyObj.host) &&
+		urlToProxyObj.pathname.endsWith('/youtubei/v1/player') &&
+		response.headers.get('content-type')?.includes('json')
+	) {
+		response
+			.clone()
+			.json()
+			.then((answer) => {
+				if (isBotCheck(answer?.playabilityStatus)) noteBotCheck('player');
+			})
+			.catch(() => {});
 	}
 
 	const responseHeaders = new Headers(response.headers);

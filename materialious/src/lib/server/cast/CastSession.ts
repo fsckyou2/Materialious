@@ -14,6 +14,7 @@ import type { SabrFormat } from 'googlevideo/shared-types';
 import { getDownloadSession } from '@materialious/shared/download';
 import { currentEgress } from '@materialious/shared/identity';
 import { getSignedInSession } from './signedIn';
+import { isBotCheck, noteBotCheck } from '$lib/server/botCheck';
 import { parseSegmentIndex, type SegmentIndexEntry } from './sidx';
 import { parseWebmIndex } from './webm';
 import { buildLiveManifest, type LiveFormat } from './liveManifest';
@@ -305,6 +306,8 @@ export class CastSession {
 		let innertube = await getDownloadSession(videoId);
 		let info = await innertube.getInfo(videoId);
 		let streamingPoToken: string | undefined;
+
+		if (isBotCheck(info.playability_status)) noteBotCheck('cast');
 
 		// Some videos YouTube plays only to somebody signed in - and lately,
 		// from this address, nearly all of them ("Sign in to confirm you're not
