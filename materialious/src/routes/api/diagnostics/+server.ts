@@ -1,5 +1,6 @@
 import { currentEgress } from '@materialious/shared/identity';
 import { json } from '@sveltejs/kit';
+import { isRefusalReport, noteRefusal } from '$lib/server/botCheck';
 
 /**
  * Receives a report from a page that stopped making progress. It is written to
@@ -25,6 +26,10 @@ export async function POST({ request, locals }) {
 		`egress=${currentEgress() ?? 'unknown'}`,
 		JSON.stringify(body).slice(0, 2000)
 	);
+
+	// A browser's refusals count toward moving the server to a new address,
+	// as a television's do.
+	if (isRefusalReport(body)) noteRefusal(body.id, 'player');
 
 	return json({ ok: true });
 }

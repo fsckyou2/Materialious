@@ -14,7 +14,7 @@ import type { SabrFormat } from 'googlevideo/shared-types';
 import { getDownloadSession } from '@materialious/shared/download';
 import { currentEgress } from '@materialious/shared/identity';
 import { getSignedInSession } from './signedIn';
-import { isBotCheck, noteBotCheck } from '$lib/server/botCheck';
+import { isBotCheck, noteBotCheck, noteRefusal } from '$lib/server/botCheck';
 import { parseSegmentIndex, type SegmentIndexEntry } from './sidx';
 import { parseWebmIndex } from './webm';
 import { buildLiveManifest, type LiveFormat } from './liveManifest';
@@ -906,6 +906,7 @@ export class CastSession {
 					`cast: ${this.videoId} refused by YouTube (stream protection status ${protection},` +
 						` seen at ${currentEgress() ?? 'an unknown address'})`
 				);
+				noteRefusal(this.videoId, 'cast');
 				void this.startOver(this.generation);
 			}
 		}

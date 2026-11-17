@@ -2,7 +2,8 @@
 # Gives Materialious a new WARP exit when YouTube bot-flags the one it has.
 #
 # The app writes egress-flag.json beside its database whenever YouTube
-# answers "Sign in to confirm you're not a bot" (src/lib/server/botCheck.ts).
+# answers "Sign in to confirm you're not a bot", or refuses a run of streams
+# (src/lib/server/botCheck.ts).
 # This runs beside it, with the Docker socket, the app's data directory at
 # /data and WARP's at /warp, and re-registers WARP when that file changes,
 # which is what has got a working address back every time so far.
@@ -35,7 +36,7 @@ exit_address() {
 health() { docker inspect -f '{{.State.Health.Status}}' "$WARP" 2>/dev/null; }
 
 rotate() {
-	log "YouTube bot-checked $(exit_address); re-registering WARP"
+	log "YouTube flagged $(exit_address): $(cat "$FLAG" 2>/dev/null); re-registering WARP"
 
 	docker stop "$WARP" >/dev/null
 	old="/warp/old-reg-$(date +%s)"
