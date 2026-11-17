@@ -51,6 +51,7 @@
 	import { manifestDomainInclusion } from '$lib/player/manifest';
 	import { installDecodingInfoCache } from '$lib/player/mediaCapabilities';
 	import { injectSabr, sabrTrace } from '$lib/player/sabr';
+	import { EMPTY_SABR_RESPONSE } from '$lib/player/sabr/ShakaPlayerAdapter';
 	import type { SabrStreamingAdapter } from 'googlevideo/sabr-streaming-adapter';
 	import { fade } from 'svelte/transition';
 	import { addToast } from '$lib/components/Toast.svelte';
@@ -386,13 +387,23 @@
 	 * Whether YouTube refused the stream's token. It still sends about a minute
 	 * of video after first refusing, then nothing, so this shows up as the
 	 * stall at one minute that no amount of retrying gets past.
+	 *
+	 * Only the answers that carry the minute say so. The empty ones after it
+	 * mostly do not, and a page opened past the minute - or resumed there,
+	 * from where the video was left - only ever gets those: it spun for good,
+	 * page load after page load, never once told it had been refused
+	 * (2026-11-17). An answer with no video in it that the player has given up
+	 * on is a refusal too.
 	 */
 	function streamRefused(error: shaka.util.Error | undefined): boolean {
 		const details: unknown[] = Array.isArray(error?.data) ? error.data : [];
-		return details.some(
-			(detail) =>
-				((detail as any)?.info?.streamInfo?.streamProtectionStatus?.status ?? 0) >= 2
+		const refusedOutright = details.some(
+			(detail) => ((detail as any)?.info?.streamInfo?.streamProtectionStatus?.status ?? 0) >= 2
 		);
+		const givenUpOnEmpty =
+			error?.severity === shaka.util.Error.Severity.CRITICAL && details[0] === EMPTY_SABR_RESPONSE;
+
+		return refusedOutright || givenUpOnEmpty;
 	}
 
 	/** The video started over after a refusal, and how many times. */

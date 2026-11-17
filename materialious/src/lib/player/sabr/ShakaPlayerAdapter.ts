@@ -33,6 +33,12 @@ interface ShakaResponseArgs {
 	arrayBuffer?: Uint8Array | ArrayBuffer;
 }
 
+/**
+ * What a SABR answer with no video in it fails with: past the first minute of
+ * a refused stream, the only way the refusal shows.
+ */
+export const EMPTY_SABR_RESPONSE = 'Empty response with no redirect information';
+
 export class ShakaPlayerAdapter implements SabrPlayerAdapter {
 	protected player: shaka.Player | null = null;
 	private requestMetadataManager?: RequestMetadataManager;
@@ -244,7 +250,7 @@ export class ShakaPlayerAdapter implements SabrPlayerAdapter {
 				});
 			}
 
-			throw createRecoverableError('Empty response with no redirect information', requestMetadata);
+			throw createRecoverableError(EMPTY_SABR_RESPONSE, requestMetadata);
 		} else {
 			const reader = response.body.getReader();
 
@@ -275,10 +281,7 @@ export class ShakaPlayerAdapter implements SabrPlayerAdapter {
 							arrayBuffer: undefined
 						});
 					}
-					throw createRecoverableError(
-						'Empty response with no redirect information',
-						requestMetadata
-					);
+					throw createRecoverableError(EMPTY_SABR_RESPONSE, requestMetadata);
 				}
 
 				const result = await sabrUmpReader.processChunk(value);
