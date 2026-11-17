@@ -95,8 +95,36 @@ export function serverSessionCache(): UniversalCache {
 
 let lastEgress: string | undefined;
 
-/** The address YouTube last said it saw this server at, if it has said. */
+/**
+ * How long the address Cloudflare last reported is trusted. Sessions made as
+ * Chrome are seldom told their remoteHost, and WARP's exit moves on its own
+ * within a registration and is replaced by the watchdog, so an address heard
+ * only from sessions went on being reported for weeks after it had gone.
+ */
+const EGRESS_CHECK_EVERY_MS = 5 * 60 * 1000;
+
+let egressCheckedAt = 0;
+
+/** Asks Cloudflare, which the server goes out through, where it is seen from. */
+function checkEgress(): void {
+	if (Date.now() - egressCheckedAt < EGRESS_CHECK_EVERY_MS) return;
+	egressCheckedAt = Date.now();
+
+	fetch('https://cloudflare.com/cdn-cgi/trace', { signal: AbortSignal.timeout(5_000) })
+		.then((response) => response.text())
+		.then((trace) => {
+			const seen = trace.match(/^ip=(.+)$/m)?.[1];
+			if (seen) recordEgress(seen, 'Cloudflare');
+		})
+		.catch(() => {});
+}
+
+/**
+ * The address the server was last seen at, if it has been: by Cloudflare,
+ * checked again every few minutes, or by YouTube in a session's remoteHost.
+ */
 export function currentEgress(): string | undefined {
+	checkEgress();
 	return lastEgress;
 }
 
@@ -109,12 +137,17 @@ export function currentEgress(): string | undefined {
  */
 export function noteEgress(innertube: Innertube): void {
 	const seen = innertube.session.context.client.remoteHost;
-	if (!seen || seen === lastEgress) return;
+	if (seen) recordEgress(seen, 'YouTube');
+	checkEgress();
+}
+
+function recordEgress(seen: string, by: string): void {
+	if (seen === lastEgress) return;
 
 	if (!lastEgress) {
-		console.info(`[egress] YouTube sees this server at ${seen}`);
+		console.info(`[egress] ${by} sees this server at ${seen}`);
 	} else if (!sameNetwork(seen, lastEgress)) {
-		console.info(`[egress] YouTube now sees this server at ${seen} (was ${lastEgress})`);
+		console.info(`[egress] ${by} now sees this server at ${seen} (was ${lastEgress})`);
 	}
 
 	lastEgress = seen;
