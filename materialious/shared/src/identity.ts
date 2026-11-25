@@ -1,4 +1,3 @@
-import { UniversalCache } from 'youtubei.js';
 import type { Innertube } from 'youtubei.js';
 
 /**
@@ -79,15 +78,49 @@ export const browserLikeFetch: typeof fetch = (input, init) => {
  */
 const SERVER_SESSION_MAX_AGE_MS = 60 * 60 * 1000;
 
-let serverCache: { cache: UniversalCache; createdAt: number } | undefined;
+/**
+ * A cache for youtubei.js that is kept in memory, and only there.
+ *
+ * The library's own `UniversalCache(false)` is not that: on Node it writes to
+ * youtubei.js under the system's temp directory, one file shared by every
+ * cache made that way and kept for as long as the container runs. Each
+ * hour's "new" cache read the old visitor straight back, so the server went
+ * on as one visitor for a week at a time, from every address WARP gave it,
+ * and every address YouTube saw it at was soon flagged (2026-11-25).
+ */
+export class MemoryCache {
+	readonly cache_dir = '';
+	readonly #entries = new Map<string, ArrayBuffer>();
+
+	async get(key: string): Promise<ArrayBuffer | undefined> {
+		return this.#entries.get(key);
+	}
+
+	async set(key: string, value: ArrayBuffer): Promise<void> {
+		this.#entries.set(key, value);
+	}
+
+	async remove(key: string): Promise<void> {
+		this.#entries.delete(key);
+	}
+}
+
+let serverCache: { cache: MemoryCache; createdAt: number; egress?: string } | undefined;
 
 /**
  * The cache the server's InnerTube sessions share: in memory only, and
- * replaced with an empty one, and so a new visitor, every hour.
+ * replaced with an empty one, and so a new visitor, every hour - and as soon
+ * as the server is known to be going out from another network, so that a
+ * visitor is never seen from two.
  */
-export function serverSessionCache(): UniversalCache {
-	if (!serverCache || Date.now() - serverCache.createdAt > SERVER_SESSION_MAX_AGE_MS) {
-		serverCache = { cache: new UniversalCache(false), createdAt: Date.now() };
+export function serverSessionCache(): MemoryCache {
+	const egress = currentEgress();
+	const moved = !!serverCache?.egress && !!egress && !sameNetwork(serverCache.egress, egress);
+
+	if (!serverCache || moved || Date.now() - serverCache.createdAt > SERVER_SESSION_MAX_AGE_MS) {
+		serverCache = { cache: new MemoryCache(), createdAt: Date.now(), egress };
+	} else if (!serverCache.egress) {
+		serverCache.egress = egress;
 	}
 
 	return serverCache.cache;
