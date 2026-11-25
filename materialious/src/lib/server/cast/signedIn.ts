@@ -1,6 +1,6 @@
 import { mintPoTokenInJSDOM } from '@materialious/shared/jsdom';
-import { BROWSER_USER_AGENT, browserLikeFetch } from '@materialious/shared/identity';
-import { Innertube, UniversalCache } from 'youtubei.js';
+import { BROWSER_USER_AGENT, browserLikeFetch, MemoryCache } from '@materialious/shared/identity';
+import { Innertube } from 'youtubei.js';
 
 /** The same request key the anonymous download session mints with. */
 const REQUEST_KEY = 'O43z0dpjhgX20SCx4KAo';
@@ -54,7 +54,7 @@ export async function getSignedInSession(
 			cookie,
 			// Its own cache: an anonymous session's visitor data must not end up
 			// as part of an account's identity, nor the other way about.
-			cache: new UniversalCache(false),
+			cache: new MemoryCache(),
 			enable_session_cache: false,
 			user_agent: BROWSER_USER_AGENT,
 			...(poToken ? { po_token: poToken } : {})
